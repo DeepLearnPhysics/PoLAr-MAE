@@ -1,0 +1,27 @@
+name: polarmae
+channels:
+  - nvidia/label/cuda-12.4.0
+  - pytorch
+  - defaults
+  - nvidia
+  - conda-forge
+  - iopath
+dependencies:
+  - python=3.9
+  - cuda
+  - cudnn
+  - gcc=12
+  - gxx
+  - pytorch=2.5.1
+  - torchvision
+  - pytorch-cuda=12.4
+  - iopath
+  - h5py
+  - numpy
+  - lightning
+  - lightning-utilities
+  - scikit-learn
+  - omegaconf
+  - pip
+  - pip:
+      - "jsonargparse[signatures]>=4.27.7"

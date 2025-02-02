@@ -1,0 +1,84 @@
+seed_everything: 0
+trainer:
+  sync_batchnorm: false # this doesn't do anything as we use custom masked batchnorm
+  gradient_clip_val: 3
+  devices: 1
+  num_nodes: 1
+  strategy: ddp
+  max_steps: 100000
+  precision: bf16-mixed
+  val_check_interval: 500
+  check_val_every_n_epoch: null
+  # optional wandb logging
+  # logger:
+  # - class_path: pytorch_lightning.loggers.WandbLogger
+  #   init_args:
+  #     project: Part-Segmentation-LArNet-5voxel
+  #     name: ViTS/5-10k-Multitask-SFT
+model:
+  pretrained_ckpt_path: null # ADD PATH TO CKPT HERE
+  encoder_freeze: true
+  num_classes: 4
+  encoder:
+    class_path: polarmae.layers.encoder.TransformerEncoder
+    init_args:
+      num_channels: 4
+      arch: vit_small
+      voxel_size: 5
+      masking_ratio: 0.6
+      masking_type: rand
+      tokenizer_kwargs: # override tokenizer kwargs if wanted. 
+        group_radius: ${eval:'${model.encoder.init_args.voxel_size} * ${model.transformation_scale_factor}'} # equivalent to 5 voxel radius in normalized coords
+      apply_relative_position_bias: false
+      transformer_kwargs:
+        postnorm: false
+        add_pos_at_every_layer: true
+        drop_rate: 0.0
+        attn_drop_rate: 0.05
+        drop_path_rate: 0.25
+  seg_decoder: null # optional transformer-based part seg decoder
+    # class_path: larnet.layers.decoder.TransformerDecoder
+    # init_args: 
+    #   arch: ${...encoder.init_args.arch}
+    #   transformer_kwargs:
+    #     postnorm: true
+    #     depth: 4
+    #     add_pos_at_every_layer: ${....encoder.init_args.transformer_kwargs.add_pos_at_every_layer}
+    #     drop_rate: ${....encoder.init_args.transformer_kwargs.drop_rate}
+    #     attn_drop_rate: ${....encoder.init_args.transformer_kwargs.attn_drop_rate}
+    #     drop_path_rate: ${....encoder.init_args.transformer_kwargs.drop_path_rate}
+  condition_global_features: true
+  seg_head_fetch_layers: [3, 7, 11]
+  seg_head_dim: 512
+  seg_head_dropout: 0.5
+  loss_func: focal
+  # learning parameters
+  learning_rate:  0.0001
+  optimizer_adamw_weight_decay: 0.05
+  lr_scheduler_linear_warmup_epochs: 12500
+  lr_scheduler_linear_warmup_start_lr: 8.6e-6 
+  lr_scheduler_cosine_eta_min: ${.lr_scheduler_linear_warmup_start_lr}
+  lr_scheduler_stepping: step # or 'epoch'
+  # other
+  train_transformations:
+  - center_and_scale
+  - rotate
+  val_transformations: 
+  - center_and_scale
+  transformation_center: [384, 384, 384] # [768 / 2]*3
+  transformation_scale_factor: ${eval:'1/ (${.transformation_center[0]} * (3**0.5))'}  # 1 / (768 * sqrt(3) / 2)
+  transformation_rotate_dims: [0, 1, 2]
+  transformation_rotate_degs: null # any
+data:
+  class_path: polarmae.datasets.PILArNetDataModule
+  init_args:
+    data_path: null # ADD PATH TO DATA HERE
+    batch_size: 32
+    num_workers: 4
+    dataset_kwargs:
+      energy_threshold: 0.13
+      remove_low_energy_scatters: true
+      emin: 1.0e-2
+      emax: 20.0
+      maxlen: 10000
+      min_points: 1024
