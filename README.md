@@ -58,7 +58,7 @@ gdown --folder 1nec9WYPRqMn-_3m6TdM12TmpoInHDosb -O /path/to/save/dataset
 
 
 ### 3.1. Pretraining
-| Model | Num. Events |  Config | SVM $\text{m}F_1$[^1] | Download |
+| Model | Num. Events |  Config | SVM $\text{m}F_1$^ | Download |
 |-------|-------------|---------|-------|----------|
 | Point-MAE | 1M | [pointmae.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae.yml) | 0.886 | [here](path) |
 | PoLAr-MAE | 1M | [pointmae_multitask.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae_multitask.yml) | 0.895 | [here](path) |
@@ -67,7 +67,7 @@ Our evaluation consists of training an ensemble of linear SVMs to classify indiv
 
 ### 3.2. Semantic Segmentation
 
-| Model | Training Method | Num. Events |  Config | $\text{m}F_1$[^1] | Download |
+| Model | Training Method | Num. Events |  Config | $\text{m}F_1$^ | Download |
 |-------|-----------------|-------------|---------|-------|----------|
 | Point-MAE | Linear probing | 10k | [part_segmentation_mae_peft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_mae_peft.yml) | 0.772 | [here](path) |
 | PoLAr-MAE | Linear probing | 10k | [part_segmentation_multitask_peft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_multitask_peft.yml) | 0.798 | [here](path) |
@@ -76,8 +76,7 @@ Our evaluation consists of training an ensemble of linear SVMs to classify indiv
 
 Our evaluation for semantic segmentation consists of 1:1 comparisons between the predicted and ground truth segmentations.
 
-[^1]: m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
-
+^: m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
 
 ## 4. Training
 
