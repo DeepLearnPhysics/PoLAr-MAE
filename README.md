@@ -1,10 +1,12 @@
 # PoLAr-MAE
 
-Repository for "Particle Trajectory Representation Learning with Masked Point Modeling"
+Particle Trajectory Representation Learning with Masked Point Modeling
+
+[[`Paper`]()][[`Dataset`](./DATASET.md)][[`BibTeX`](#citing-polar-mae)]
 
 ![arch](images/arch.png)
 
-## 1. Installation
+## Installation
 
 This codebase relies on a number of dependencies, some of which are difficult to get running. If you're using conda on Linux, use the following to create an environment and install the dependencies:
 
@@ -42,7 +44,7 @@ There are a couple of extra dependencies that are optional, but recommended:
 conda install wandb jupyter matplotlib
 ```
 
-## 2. PILArNet-M Dataset
+## PILArNet-M Dataset
 
 We use and provide the 156 GB **PILArNet-M** dataset of >1M [LArTPC](https://www.symmetrymagazine.org/article/october-2012/time-projection-chambers-a-milestone-in-particle-detector-technology?language_content_entity=und) events. See [DATASET.md](DATASET.md) for more details, but the dataset is available at this [link](https://drive.google.com/drive/folders/1nec9WYPRqMn-_3m6TdM12TmpoInHDosb?usp=drive_link), or can be downloaded with the following command:
 
@@ -54,10 +56,10 @@ gdown --folder 1nec9WYPRqMn-_3m6TdM12TmpoInHDosb -O /path/to/save/dataset
 > `gdown` must be installed via e.g. `pip install gdown` or `conda install gdown`.
 
 
-## 3. Models
+## Models
 
 
-### 3.1. Pretraining
+### Pretraining
 | Model | Num. Events |  Config | SVM $\text{m}F_1$ | Download |
 |-------|-------------|---------|-------|----------|
 | Point-MAE | 1M | [pointmae.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae.yml) | 0.886 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_pretrain.ckpt) |
@@ -65,7 +67,7 @@ gdown --folder 1nec9WYPRqMn-_3m6TdM12TmpoInHDosb -O /path/to/save/dataset
 
 Our evaluation consists of training an ensemble of linear SVMs to classify individual tokens (i.e., groups) as containing one or more classes. This is done via a One vs Rest strategy, where each SVM is trained to classify a single class against all others. m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
 
-### 3.2. Semantic Segmentation
+### Semantic Segmentation
 
 | Model | Training Method | Num. Events |  Config | $\text{m}F_1$ | Download |
 |-------|-----------------|-------------|---------|-------|----------|
@@ -76,9 +78,9 @@ Our evaluation consists of training an ensemble of linear SVMs to classify indiv
 
 Our evaluation for semantic segmentation consists of 1:1 comparisons between the predicted and ground truth segmentations. m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
 
-## 4. Training
+## Training
 
-### 4.1. Pretraining
+### Pretraining
 
 To pretrain Point-MAE, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae.yml) to include the path to the PILArNet-M dataset, and run the following command:
 
@@ -93,7 +95,7 @@ python -m polarmae.tasks.pointmae_multitask fit --config configs/pointmae_multit
 ```
 
 
-### 4.2. Semantic Segmentation
+### Semantic Segmentation
 
 To train a semantic segmentation model, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_mae_peft.yml) to include the path to the PILArNet-M dataset, and run the following command:
 
@@ -105,11 +107,11 @@ python -m polarmae.tasks.part_segmentation fit --config configs/part_segmentatio
 where `{mae,multitask}` is either `mae` or `multitask`, and `{peft,fft}` is either `peft` or `fft`. You can either specify the pretrained checkpoint path in the config, or pass it as an argument to the command like above.
 
 
-### Acknowledgements
+## Acknowledgements
 
-This repository is built upon the [Point-MAE](https://github.com/Pang-Yatian/Point-MAE) and [point2vec](https://github.com/kabouzeid/point2vec) repositories.
+This repository is built upon the lovely [Point-MAE](https://github.com/Pang-Yatian/Point-MAE) and [point2vec](https://github.com/kabouzeid/point2vec) repositories.
 
-### Citation
+## Citing PoLAr-MAE
 
 If you find this work useful, please cite the following paper:
 
