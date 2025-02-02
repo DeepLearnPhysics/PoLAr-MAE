@@ -1,6 +1,6 @@
-# Updated DATASET.md
+# PILArNet-Medium
 
-We provide the 156 GB **PILArNet-M** dataset consisting of >1M [LArTPC](https://www.symmetrymagazine.org/article/october-2012/time-projection-chambers-a-milestone-in-particle-detector-technology?language_content_entity=und) events. Download the dataset from this [link](https://drive.google.com/drive/folders/1nec9WYPRqMn-_3m6TdM12TmpoInHDosb?usp=drive_link) or via the following command:
+We provide the 156 GB **PILArNet-M** dataset, an continuation of [PILArNet](https://arxiv.org/abs/2006.01993), consisting of >1M [LArTPC](https://www.symmetrymagazine.org/article/october-2012/time-projection-chambers-a-milestone-in-particle-detector-technology?language_content_entity=und) events. Download the dataset from this [link](https://drive.google.com/drive/folders/1nec9WYPRqMn-_3m6TdM12TmpoInHDosb?usp=drive_link) or via the following command:
 
 ```bash
 gdown --folder 1nec9WYPRqMn-_3m6TdM12TmpoInHDosb -O /path/to/save/dataset
