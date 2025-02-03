@@ -9,34 +9,24 @@ Particle Trajectory Representation Learning with Masked Point Modeling
 ## Installation
 
 This codebase relies on a number of dependencies, some of which are difficult to get running. If you're using conda on Linux, use the following to create an environment and install the dependencies:
-
-```bash
-conda env create -f environment.yml
-conda activate polarmae
-MAX_JOBS=N bash ./install.sh
-```
-
-> [!NOTE]
->environment.yml is a full environment specification, which includes an install of cuda 12.4, pytorch 2.1.5, and python 3.9.
-> 
-> `pytorch3d` and `cnms` are compiled from source, and will only be compiled for the CUDA device architecture of the visible GPU(s) available on the system.
-
-Change `N` in `MAX_JOBS=N` to the number of cores you want to use for installing `pytorch3d` and `cnms`. At least 4 cores is recommended to compile `pytorch3d` in a reasonable amount of time. 
-
-If you'd like to do the installation on your own, you will need the following dependencies:
+You will need the following dependencies:
 
 - [CUDA](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#)
 - PyTorch 2.1.0, 2.1.1, 2.1.2, 2.2.0, 2.2.1, 2.2.2, 2.3.0, 2.3.1, 2.4.0 or 2.4.1.
 - gcc & g++ >= 4.9 and < 13
 - [pytorch3d](https://github.com/facebookresearch/pytorch3d)
-- [PyTorch Lightning](https://github.com/Lightning-AI/pytorch-lightning)
-- [NumPy](https://github.com/numpy/numpy)
-- [Lightning-Utilities](https://github.com/Lightning-AI/utilities)
-- [Scikit-Learn](https://github.com/scikit-learn/scikit-learn)
-- [Omegaconf](https://github.com/omry/omegaconf)
-- [h5py](https://github.com/h5py/h5py)
+- PyTorch Lightning
+- NumPy
+- Lightning-Utilities
+- Scikit-Learn
+- Omegaconf
+- h5py
+- [cnms](https://github.com/DeepLearnPhysics/PoLAr-MAE/tree/main/extensions/cnms)
+- (Optional) wandb
 
 `pytorch3d` is usually the most difficult dependency to install. See the `pytorch3d` [INSTALL.md](https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md) for more details.
+
+`cnms` can be installed by going into the `extensions/cnms` directory and running `python setup.py install --user`.
 
 There are a couple of extra dependencies that are optional, but recommended:
 
