@@ -52,8 +52,8 @@ gdown --folder 1nec9WYPRqMn-_3m6TdM12TmpoInHDosb -O /path/to/save/dataset
 ### Pretraining
 | Model | Num. Events |  Config | SVM $\text{m}F_1$ | Download |
 |-------|-------------|---------|-------|----------|
-| Point-MAE | 1M | [pointmae.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae.yml) | 0.886 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_pretrain.ckpt) |
-| PoLAr-MAE | 1M | [pointmae_multitask.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae_multitask.yml) | 0.895 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_pretrain.ckpt) |
+| Point-MAE | 1M | [pointmae.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/pointmae.yml) | 0.886 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_pretrain.ckpt) |
+| PoLAr-MAE | 1M | [pointmae_multitask.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/pointmae_multitask.yml) | 0.895 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_pretrain.ckpt) |
 
 Our evaluation consists of training an ensemble of linear SVMs to classify individual tokens (i.e., groups) as containing one or more classes. This is done via a One vs Rest strategy, where each SVM is trained to classify a single class against all others. m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
 
@@ -61,10 +61,10 @@ Our evaluation consists of training an ensemble of linear SVMs to classify indiv
 
 | Model | Training Method | Num. Events |  Config | $\text{m}F_1$ | Download |
 |-------|-----------------|-------------|---------|-------|----------|
-| Point-MAE | Linear probing | 10k | [part_segmentation_mae_peft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_mae_peft.yml) | 0.772 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_peft_segsem_10k.ckpt) |
-| PoLAr-MAE | Linear probing | 10k | [part_segmentation_multitask_peft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_multitask_peft.yml) | 0.798 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_peft_segsem_10k.ckpt) |
-| Point-MAE | FFT | 10k | [part_segmentation_mae_fft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_mae_fft.yml) | 0.831 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_fft_segsem_10k.ckpt) |
-| PoLAr-MAE | FFT | 10k | [part_segmentation_multitask_fft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_multitask_fft.yml) | 0.837 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_fft_segsem_10k.ckpt) |
+| Point-MAE | Linear probing | 10k | [part_segmentation_mae_peft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/part_segmentation_mae_peft.yml) | 0.772 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_peft_segsem_10k.ckpt) |
+| PoLAr-MAE | Linear probing | 10k | [part_segmentation_multitask_peft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/part_segmentation_multitask_peft.yml) | 0.798 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_peft_segsem_10k.ckpt) |
+| Point-MAE | FFT | 10k | [part_segmentation_mae_fft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/part_segmentation_mae_fft.yml) | 0.831 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_fft_segsem_10k.ckpt) |
+| PoLAr-MAE | FFT | 10k | [part_segmentation_multitask_fft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/part_segmentation_multitask_fft.yml) | 0.837 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_fft_segsem_10k.ckpt) |
 
 Our evaluation for semantic segmentation consists of 1:1 comparisons between the predicted and ground truth segmentations. m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
 
@@ -72,13 +72,13 @@ Our evaluation for semantic segmentation consists of 1:1 comparisons between the
 
 ### Pretraining
 
-To pretrain Point-MAE, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae.yml) to include the path to the PILArNet-M dataset, and run the following command:
+To pretrain Point-MAE, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/pointmae.yml) to include the path to the PILArNet-M dataset, and run the following command:
 
 ```bash
 python -m polarmae.tasks.pointmae fit --config configs/pointmae.yml
 ```
 
-To pretrain PoLAr-MAE, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/pointmae_multitask.yml) to include the path to the PILArNet-M dataset, and run the following command:
+To pretrain PoLAr-MAE, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/pointmae_multitask.yml) to include the path to the PILArNet-M dataset, and run the following command:
 
 ```bash
 python -m polarmae.tasks.pointmae_multitask fit --config configs/pointmae_multitask.yml
@@ -87,7 +87,7 @@ python -m polarmae.tasks.pointmae_multitask fit --config configs/pointmae_multit
 
 ### Semantic Segmentation
 
-To train a semantic segmentation model, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/configs/part_segmentation_mae_peft.yml) to include the path to the PILArNet-M dataset, and run the following command:
+To train a semantic segmentation model, modify the [config file](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/part_segmentation_mae_peft.yml) to include the path to the PILArNet-M dataset, and run the following command:
 
 ```bash
 python -m polarmae.tasks.part_segmentation fit --config configs/part_segmentation_{mae,multitask}_{peft,fft}.yml \
