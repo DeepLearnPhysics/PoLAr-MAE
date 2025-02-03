@@ -55,7 +55,7 @@ gdown --folder 1nec9WYPRqMn-_3m6TdM12TmpoInHDosb -O /path/to/save/dataset
 | Point-MAE | 1M | [pointmae.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/pointmae.yml) | 0.886 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_pretrain.ckpt) |
 | PoLAr-MAE | 1M | [pointmae_multitask.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/pointmae_multitask.yml) | 0.895 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_pretrain.ckpt) |
 
-Our evaluation consists of training an ensemble of linear SVMs to classify individual tokens (i.e., groups) as containing one or more classes. This is done via a One vs Rest strategy, where each SVM is trained to classify a single class against all others. m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
+Our evaluation consists of training an ensemble of linear SVMs to classify individual tokens (i.e., groups) as containing one or more classes. This is done via a One vs Rest strategy, where each SVM is trained to classify a single class against all others. $\text{m}F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
 
 ### Semantic Segmentation
 
@@ -66,7 +66,7 @@ Our evaluation consists of training an ensemble of linear SVMs to classify indiv
 | Point-MAE | FFT | 10k | [part_segmentation_mae_fft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/part_segmentation_mae_fft.yml) | 0.831 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/mae_fft_segsem_10k.ckpt) |
 | PoLAr-MAE | FFT | 10k | [part_segmentation_multitask_fft.yml](https://github.com/DeepLearnPhysics/PoLAr-MAE/blob/main/configs/part_segmentation_multitask_fft.yml) | 0.837 | [here](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/polarmae_fft_segsem_10k.ckpt) |
 
-Our evaluation for semantic segmentation consists of 1:1 comparisons between the predicted and ground truth segmentations. m$F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
+Our evaluation for semantic segmentation consists of 1:1 comparisons between the predicted and ground truth segmentations. $\text{m}F_1$ is the mean $F_1$ score over all semantic categories in the validation set of the PILArNet-M dataset.
 
 ## Training
 
