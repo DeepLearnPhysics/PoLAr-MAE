@@ -2,7 +2,7 @@
 
 Particle Trajectory Representation Learning with Masked Point Modeling
 
-[[`Dataset`](./DATASET.md)][[`Paper`]()][[`Project`](https://youngsm/polarmae)][[`BibTeX`](#citing-polar-mae)]
+[[`Paper`]()][[`Dataset`](./DATASET.md)][[`Project`](https://youngsm/polarmae)][[`BibTeX`](#citing-polar-mae)]
 
 ![arch](images/arch.png)
 
