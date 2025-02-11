@@ -14,6 +14,8 @@ class VariablePointcloudMasking(nn.Module):
 
         if type == "rand":
             self.forward = self._mask_center_rand
+        elif type == "rand_reindex":
+            self.forward = self._mask_center_rand_reindex
         elif type == "block":
             raise NotImplementedError('Block masking is not implemented for variable group masking')
         elif type == "fps+nms":
@@ -21,52 +23,126 @@ class VariablePointcloudMasking(nn.Module):
         else:
             raise ValueError(f"No such masking type: {type}")
 
-    @torch.no_grad()
-    def _mask_center_rand(
-        self, centers: torch.Tensor, lengths: torch.Tensor
-    ) -> torch.Tensor:
-        # centers: (B, G, C)
-        # Create a mask for valid positions (positions within lengths)
-        B, G, _ = centers.shape
-        device = centers.device
-        valid_positions_mask = torch.arange(G, device=device).unsqueeze(
-            0
-        ) < lengths.unsqueeze(1)  # Shape: (B, G)
+    # @torch.no_grad()
+    # def _mask_center_rand(
+    #     self, lengths: torch.Tensor
+    # ) -> torch.Tensor:
+    #     # centers: (B, G, C)
+    #     # Create a mask for valid positions (positions within lengths)
+    #     B, = lengths.shape
+    #     G = lengths.max()
+    #     device = lengths.device
+    #     valid_positions_mask = torch.arange(G, device=device).unsqueeze(
+    #         0
+    #     ) < lengths.unsqueeze(1)  # Shape: (B, G)
+    #     if self.ratio == 0:
+    #         masked = torch.zeros(B, G, device=device, dtype=torch.bool)
+    #         not_masked = torch.zeros_like(masked)
+    #         not_masked[valid_positions_mask] = True
+    #         return masked, not_masked
+
+    #     # Generate random scores
+    #     random_scores = torch.rand(B, G, device=device)
+
+    #     # Set random_scores for invalid positions to infinity so they are sorted to the end
+    #     random_scores[~valid_positions_mask] = float("inf")
+
+    #     # Sort the random scores to simulate random permutations
+    #     sorted_scores, sorted_indices = torch.sort(random_scores, dim=1)
+
+    #     # Compute the number of tokens to mask per batch
+    #     num_mask = (self.ratio * lengths).int()  # Shape: (B,)
+
+    #     # Create indices for batch and sequence positions
+    #     batch_indices = torch.arange(B, device=device).unsqueeze(1).expand(B, G)
+    #     seq_indices = torch.arange(G, device=device).unsqueeze(0).expand(B, G)
+
+    #     # Create a mask indicating which positions should be masked
+    #     mask = seq_indices < num_mask.unsqueeze(1)
+    #     mask = mask & valid_positions_mask  # Ensure we only mask valid positions
+
+    #     # Initialize masked and not_masked tensors
+    #     masked = torch.zeros(B, G, device=device, dtype=torch.bool)
+    #     not_masked = torch.zeros(B, G, device=device, dtype=torch.bool)
+
+    #     # Assign masked and not_masked positions using advanced indexing
+    #     masked[batch_indices, sorted_indices] = mask
+    #     not_masked[batch_indices, sorted_indices] = (~mask) & valid_positions_mask
+
+    #     return masked, not_masked  # (B, G)
+    
+
+    def _mask_center_rand(self, lengths: torch.Tensor):
+        """
+        Given centers of shape (B, G, C) and lengths (B,) indicating how many positions
+        in each batch are valid, this function computes a random masking (with ratio self.ratio)
+        and returns, for each batch:
+        - masked_indices: (B, max_mask) long tensor of positions (in random order) for masked tokens,
+                            padded (arbitrary values) beyond each batch’s valid count.
+        - masked_attn: (B, max_mask) bool tensor with True for real masked tokens.
+        - unmasked_indices: (B, max_unmask) long tensor of positions for unmasked tokens,
+                            padded similarly.
+        - unmasked_attn: (B, max_unmask) bool tensor with True for real unmasked tokens.
+        
+        To extract token features from centers, you can do:
+        masked_tokens = torch.gather(centers, 1, masked_indices.unsqueeze(-1).expand(-1, -1, centers.size(-1)))
+        unmasked_tokens = torch.gather(centers, 1, unmasked_indices.unsqueeze(-1).expand(-1, -1, centers.size(-1)))
+        
+        (Note: For batches with self.ratio==0, masked tokens will be empty.)
+        """
+        B, = lengths.shape
+        G = lengths.max()
+        device = lengths.device
+
+        # Compute valid positions per batch (positions [0, lengths[b]) are valid)
+        valid_positions = torch.arange(G, device=device).unsqueeze(0) < lengths.unsqueeze(1)  # (B, G)
+
+        # --- Handle the trivial case where no tokens are masked ---
         if self.ratio == 0:
-            masked = torch.zeros(centers.shape[:2], device=centers.device, dtype=torch.bool)
-            not_masked = torch.zeros_like(masked)
-            not_masked[valid_positions_mask] = True
-            return masked, not_masked
+            max_valid = lengths.max().item()
+            all_indices = torch.arange(G, device=device).unsqueeze(0).expand(B, G)
+            unmasked_indices = all_indices[:, :max_valid]  # (B, max_valid)
+            unmasked_attn = torch.arange(max_valid, device=device).unsqueeze(0).expand(B, max_valid) < lengths.unsqueeze(1)
+            # No masked tokens at all (empty tensors)
+            masked_indices = torch.empty(B, 0, device=device, dtype=torch.long)
+            masked_attn = torch.empty(B, 0, device=device, dtype=torch.bool)
+            return masked_indices, masked_attn, unmasked_indices, unmasked_attn
 
-        # Generate random scores
+        # --- Compute a random permutation over valid tokens ---
         random_scores = torch.rand(B, G, device=device)
+        # Push invalid positions (>= lengths[b]) to the end
+        random_scores[~valid_positions] = float("inf")
+        # Sorted indices so that valid positions come first in random order.
+        _, sorted_indices = torch.sort(random_scores, dim=1)  # sorted_indices: (B, G)
 
-        # Set random_scores for invalid positions to infinity so they are sorted to the end
-        random_scores[~valid_positions_mask] = float("inf")
+        # --- Decide how many tokens to mask per batch ---
+        num_mask = (self.ratio * lengths).to(torch.long)  # (B,)
+        max_mask = num_mask.max()  # maximum masked tokens across batch
 
-        # Sort the random scores to simulate random permutations
-        sorted_scores, sorted_indices = torch.sort(random_scores, dim=1)
+        # For each batch, the first num_mask[b] indices in sorted_indices are the masked tokens.
+        # We simply slice [:max_mask] and then later “attend” only to the first num_mask[b] per batch.
+        masked_indices = sorted_indices[:, :max_mask]  # (B, max_mask)
+        # Build an attention mask: each row is True for positions < num_mask[b] and False otherwise.
+        masked_mask = torch.arange(max_mask, device=device).unsqueeze(0).expand(B, max_mask) < num_mask.unsqueeze(1)
 
-        # Compute the number of tokens to mask per batch
-        num_mask = (self.ratio * lengths).int()  # Shape: (B,)
+        # --- Compute unmasked indices ---
+        # For each batch, the unmasked tokens are the remaining valid tokens, i.e. positions
+        # sorted_indices[b, num_mask[b]: lengths[b]].
+        num_unmask = lengths - num_mask  # (B,)
+        max_unmask = num_unmask.max()
 
-        # Create indices for batch and sequence positions
-        batch_indices = torch.arange(B, device=device).unsqueeze(1).expand(B, G)
-        seq_indices = torch.arange(G, device=device).unsqueeze(0).expand(B, G)
+        # Create an index offset for each batch: for row b, we want indices from num_mask[b] to num_mask[b]+num_unmask[b]-1.
+        idx_range = torch.arange(max_unmask, device=device).unsqueeze(0).expand(B, max_unmask)  # (B, max_unmask)
+        # Add the per-batch starting index (num_mask) so that for batch b we select sorted_indices[b, num_mask[b] + i].
+        unmask_select_idx = num_mask.unsqueeze(1) + idx_range  # (B, max_unmask)
+        # (Clamp not strictly necessary because idx_range is built from num_unmask, but just in case)
+        unmask_select_idx = unmask_select_idx.clamp(max=G - 1)
+        unmasked_indices = torch.gather(sorted_indices, 1, unmask_select_idx)  # (B, max_unmask)
+        unmasked_mask = idx_range < num_unmask.unsqueeze(1)
 
-        # Create a mask indicating which positions should be masked
-        mask = seq_indices < num_mask.unsqueeze(1)
-        mask = mask & valid_positions_mask  # Ensure we only mask valid positions
+        return masked_indices, masked_mask, unmasked_indices, unmasked_mask
 
-        # Initialize masked and not_masked tensors
-        masked = torch.zeros(B, G, device=device, dtype=torch.bool)
-        not_masked = torch.zeros(B, G, device=device, dtype=torch.bool)
 
-        # Assign masked and not_masked positions using advanced indexing
-        masked[batch_indices, sorted_indices] = mask
-        not_masked[batch_indices, sorted_indices] = (~mask) & valid_positions_mask
-
-        return masked, not_masked  # (B, G)
 
 # https://github.com/allenai/allennlp/blob/main/allennlp/modules/masked_layer_norm.py
 class MaskedLayerNorm(torch.nn.Module):

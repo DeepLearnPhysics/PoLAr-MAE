@@ -3,7 +3,7 @@ from typing import List, Literal, Optional
 
 import torch
 import torch.nn as nn
-from polarmae.layers.attention import prepare_attn_masks
+from polarmae.layers.attention import prepare_attn_mask
 from polarmae.layers.block import Block
 from polarmae.layers.masking import MaskedDropPath, MaskedLayerNorm
 
@@ -21,7 +21,6 @@ class Identity(nn.Module):
 @dataclass
 class TransformerOutput:
     last_hidden_state: torch.Tensor  # (B, T, C)
-    last_hidden_state_y: torch.Tensor | None = None  # (B, T, C)
     hidden_states: Optional[List[torch.Tensor]] = None  # [(B, T, C)]
     attentions: Optional[List[torch.Tensor]] = None  # [(B, H, T)]
     ffns: Optional[List[torch.Tensor]] = None  # [(B, T, C)]
@@ -41,6 +40,7 @@ class Transformer(nn.Module):
         drop_path_uniform: bool = False,
         add_pos_at_every_layer=False,
         postnorm=True,
+        # deprecated
         use_flash_self_attn=False,
     ):
         super().__init__()
@@ -63,7 +63,6 @@ class Transformer(nn.Module):
                     drop=drop_rate,
                     attn_drop=attn_drop_rate,
                     drop_path=dpr[i],
-                    use_flash_self_attn=use_flash_self_attn,
                 )
                 for i in range(depth)
             ]
@@ -92,13 +91,12 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        pos_x: torch.Tensor,
-        x_mask: torch.Tensor | None = None,
-        y: torch.Tensor | None = None,          # X-attn for e.g. PCP-MAE
-        pos_y: torch.Tensor | None = None,      # X-attn for e.g. PCP-MAE
-        y_mask: torch.Tensor | None = None,     # X-attn for e.g. PCP-MAE
-        rpb: torch.Tensor | None = None,        # X-attn for e.g. PCP-MAE
+        q: torch.Tensor,
+        pos_q: torch.Tensor,
+        q_mask: torch.Tensor | None = None,
+        kv: torch.Tensor | None = None,          # X-attn
+        pos_kv: torch.Tensor | None = None,      # X-attn
+        kv_mask: torch.Tensor | None = None,     # X-attn
         return_hidden_states: bool = False,
         return_attentions: bool = False,
         return_ffns: bool = False,
@@ -108,41 +106,35 @@ class Transformer(nn.Module):
         Q from x, K/V from cat[x,y].
         If memory is None, self-attention is performed.
         """
-        x_attn_mask, y_attn_mask = prepare_attn_masks(x, x_mask, y, y_mask, dtype=x.dtype)
+        qkv_attn_mask = prepare_attn_mask(q, q_mask, kv, kv_mask)
 
         hidden_states = [] if return_hidden_states else None
         attentions = [] if return_attentions else None
         ffns = [] if return_ffns else None
 
+        kv = kv + pos_kv if kv is not None else kv
         if not self.add_pos_at_every_layer:
-            x = x + pos_x
-            y = y + pos_y if y is not None else y
+            q = q + pos_q
 
         for block in self.blocks:
             if self.add_pos_at_every_layer:
-                x = x + pos_x
-                y = y + pos_y if y is not None else y
-            x, y, attn = block(
-                x,
-                x_attn_mask,
-                x_mask,
-                y,
-                y_attn_mask,
-                y_mask,
-                rpb,
+                q = q + pos_q
+            q, attn = block(
+                q,
+                q_mask,
+                qkv_attn_mask,
+                kv,
             )
             if return_hidden_states:
                 assert hidden_states is not None
-                hidden_states.append(x)
+                hidden_states.append(q)
             if return_attentions:
                 assert attentions is not None
                 attentions.append(attn)
 
-        x = self.norm(x, x_mask)
-        if y is not None:
-            y = self.norm(y, y_mask)
+        q = self.norm(q, q_mask)
 
-        return TransformerOutput(x, y, hidden_states, attentions, ffns)
+        return TransformerOutput(q, hidden_states, attentions, ffns)
 
 def make_transformer(
     arch_name: Literal['vit_tiny', 'vit_small', 'vit_base'],

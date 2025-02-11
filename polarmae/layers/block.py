@@ -25,6 +25,7 @@ class Block(nn.Module):
         drop_path=0.0,
         act_layer=nn.GELU,
         norm_layer=MaskedLayerNorm,
+        # deprecated
         use_flash_self_attn=False,
     ):
         super().__init__()
@@ -41,8 +42,7 @@ class Block(nn.Module):
             qkv_bias=qkv_bias,
             qk_scale=qk_scale,
             attn_drop=attn_drop,
-            proj_drop=drop,
-            use_flash_self_attn=use_flash_self_attn,
+            proj_drop=drop
         )
 
         # MLP BLOCK
@@ -56,14 +56,11 @@ class Block(nn.Module):
 
     def forward(
         self,
-        x,
-        x_attn_mask=None,
-        x_mask=None,
-        y=None,
-        y_attn_mask=None,
-        y_mask=None,
-        rpb=None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q,
+        q_mask,
+        qkv_attn_mask,
+        kv=None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor of shape (B, N, C) where B is the batch size, N is the sequence length, and C is the feature dimension.
@@ -81,35 +78,27 @@ class Block(nn.Module):
                 - attn (torch.Tensor): Attention weights.
         """
 
-        if y is None:
-            _x, _, attn = self.attn(self.norm1(x, x_mask), x_attn_mask, rpb=rpb)
-            x = x + self.drop_path(_x, x_mask)
-            ffn = self.mlp(self.norm2(x, x_mask))
-            if x_mask is not None:
-                ffn = ffn * x_mask.unsqueeze(-1)
-            x = x + self.drop_path(ffn, x_mask)
-            y = None
-            return x, y, attn
+        # if kv is None:
+        #     _q, _, attn = self.attn(self.norm1(q, q_mask), q_attn_mask, rpb=rpb)
+        #     q = q + self.drop_path(_q, q_mask)
+        #     ffn = self.mlp(self.norm2(q, q_mask))
+        #     if q_mask is not None:
+        #         ffn = ffn * q_mask.unsqueeze(-1)
+        #     q = q + self.drop_path(ffn, q_mask)
+        #     return q, attn
 
-        _x, _y, attn = self.attn(
-            x=self.norm1(x, x_mask), 
-            x_attn_mask=x_attn_mask, 
-            y=self.norm1(y, y_mask), 
-            y_attn_mask=y_attn_mask,
-            rpb=rpb,
+        _q, attn = self.attn(
+            q=self.norm1(q, q_mask), 
+            qkv_attn_mask=qkv_attn_mask, 
+            kv=kv, 
         )
-        x = x + self.drop_path(_x, x_mask)
-        y = y + self.drop_path(_y, y_mask)
+        q = q + self.drop_path(_q, q_mask)
 
-        ffn_x = self.mlp(self.norm2(x, x_mask))
-        ffn_y = self.mlp(self.norm2(y, y_mask))
+        ffn_q = self.mlp(self.norm2(q, q_mask))
 
-        if x_mask is not None:
-            ffn_x = ffn_x * x_mask.unsqueeze(-1)
-        if y_mask is not None:
-            ffn_y = ffn_y * y_mask.unsqueeze(-1)
+        if q_mask is not None:
+            ffn_q = ffn_q * q_mask.unsqueeze(-1)
 
-        x = x + self.drop_path(ffn_x, x_mask)
-        y = y + self.drop_path(ffn_y, y_mask)
+        q = q + self.drop_path(ffn_q, q_mask)
 
-        return x, y, attn
+        return q, attn

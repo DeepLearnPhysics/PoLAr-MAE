@@ -23,18 +23,17 @@ class TransformerDecoder(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        pos_x: torch.Tensor,
-        x_mask: torch.Tensor | None = None,
-        y: torch.Tensor | None = None,          # X-attn for e.g. PCP-MAE
-        pos_y: torch.Tensor | None = None,      # X-attn for e.g. PCP-MAE
-        y_mask: torch.Tensor | None = None,     # X-attn for e.g. PCP-MAE
-        rpb: torch.Tensor | None = None,       # X-attn for e.g. PCP-MAE
+        q: torch.Tensor,
+        pos_q: torch.Tensor,
+        q_mask: torch.Tensor | None = None,
+        kv: torch.Tensor | None = None,          # X-attn for e.g. PCP-MAE
+        pos_kv: torch.Tensor | None = None,      # X-attn for e.g. PCP-MAE
+        kv_mask: torch.Tensor | None = None,     # X-attn for e.g. PCP-MAE
         return_hidden_states: bool = False,
         return_attentions: bool = False,
         return_ffns: bool = False,
     ) -> TransformerOutput:
         """Call transformer forward"""
         return self.transformer.forward(
-            x, pos_x, x_mask, y, pos_y, y_mask, rpb, return_hidden_states, return_attentions, return_ffns
+            q, pos_q, q_mask, kv, pos_kv, kv_mask, return_hidden_states, return_attentions, return_ffns
         )

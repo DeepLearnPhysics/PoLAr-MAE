@@ -65,10 +65,22 @@ class TransformerEncoder(nn.Module):
             endpoints: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         out = self.prepare_tokens(points, lengths, ids, endpoints)
-        masked, unmasked = self.masking(out['centers'], out['emb_mask'].sum(-1))
-        out['masked'] = masked
-        out['unmasked'] = unmasked
-        out['masked_sum'] = masked.sum().item()
+        masked_indices, masked_mask, unmasked_indices, unmasked_mask = self.masking(out['emb_mask'].sum(-1))
+        gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
+        large_gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[2], x.shape[3]))
+
+        # out['masked_indices'] = masked_indices
+        out['masked_mask'] = masked_mask
+        out['masked_tokens'] = gather(out['x'], masked_indices)
+        out['masked_centers'] = gather(out['centers'], masked_indices)
+        out['masked_pos_embed'] = self.pos_embed(out['masked_centers'])
+        out['masked_groups'] = large_gather(out['groups'], masked_indices)
+        out['masked_groups_point_mask'] = gather(out['point_mask'], masked_indices)
+        # out['unmasked_indices'] = unmasked_indices
+        out['unmasked_mask'] = unmasked_mask
+        out['unmasked_tokens'] = gather(out['x'], unmasked_indices)
+        out['unmasked_centers'] = gather(out['centers'], unmasked_indices)
+        out['unmasked_pos_embed'] = self.pos_embed(out['unmasked_centers'])
         return out
     
     def prepare_tokens(
@@ -87,7 +99,7 @@ class TransformerEncoder(nn.Module):
                 return_point_info=True,
             )
         )
-        pos_embed = self.pos_embed(centers)
+        # pos_embed = self.pos_embed(centers)
         rpb = (
             self.relative_position_bias(centers)
             if self.relative_position_bias is not None
@@ -101,7 +113,7 @@ class TransformerEncoder(nn.Module):
             "endpoints_groups": endpoints_groups,
             "groups": groups,
             "point_mask": point_mask,
-            "pos_embed": pos_embed,
+            # "pos_embed": pos_embed,
             "rpb": rpb,
             "grouping_idx": idx,
         }
@@ -121,18 +133,17 @@ class TransformerEncoder(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        pos_x: torch.Tensor,
-        x_mask: torch.Tensor | None = None,
-        y: torch.Tensor | None = None,          # X-attn for e.g. PCP-MAE
-        pos_y: torch.Tensor | None = None,      # X-attn for e.g. PCP-MAE
-        y_mask: torch.Tensor | None = None,     # X-attn for e.g. PCP-MAE
-        rpb: torch.Tensor | None = None,       # X-attn for e.g. PCP-MAE
+        q: torch.Tensor,
+        pos_q: torch.Tensor,
+        q_mask: torch.Tensor | None = None,
+        kv: torch.Tensor | None = None,          # X-attn for e.g. PCP-MAE
+        pos_kv: torch.Tensor | None = None,      # X-attn for e.g. PCP-MAE
+        kv_mask: torch.Tensor | None = None,     # X-attn for e.g. PCP-MAE
         return_hidden_states: bool = False,
         return_attentions: bool = False,
         return_ffns: bool = False,
     ) -> TransformerOutput:
         """Call transformer forward"""
         return self.transformer.forward(
-            x, pos_x, x_mask, y, pos_y, y_mask, rpb, return_hidden_states, return_attentions, return_ffns
+            q, pos_q, q_mask, kv, pos_kv, kv_mask, return_hidden_states, return_attentions, return_ffns
         )

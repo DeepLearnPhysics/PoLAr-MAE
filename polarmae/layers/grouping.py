@@ -328,8 +328,8 @@ class PointcloudGrouping(nn.Module):
 
         # sample farthest points (either seed points or legit the centers)
         possible_centers, idx = sample_farthest_points(
-            points[...,:3].float(),
-            K=self.num_groups,
+            points[...,:3],
+            K=torch.where(lengths > self.num_groups, self.num_groups, lengths),
             lengths=lengths,
             random_start_point=True,
         )  # (B, G, 3)
@@ -361,8 +361,8 @@ class PointcloudGrouping(nn.Module):
         if self.group_radius is None:
             # KNN
             _, idx, _ = knn_points(
-                group_centers[:, :, :3].float(),
-                points[:, :, :3].float(),
+                group_centers[:, :, :3],
+                points[:, :, :3],
                 lengths1=lengths1,
                 lengths2=lengths,
                 K=self.group_upscale_points,
@@ -372,8 +372,8 @@ class PointcloudGrouping(nn.Module):
         else: # otherwise, use ball query to get the group points
             # Ball query
             _, idx, _ = ball_query(
-                group_centers[:, :, :3].float(),
-                points[:, :, :3].float(),
+                group_centers[:, :, :3],
+                points[:, :, :3],
                 K=self.group_upscale_points,
                 radius=self.group_radius,
                 lengths1=lengths1,
@@ -381,21 +381,21 @@ class PointcloudGrouping(nn.Module):
                 return_nn=False,
             )  # idx: (B, G, K_big)
 
-        # Energy-based reduction of the group points (K_big --> K by taking top K energies)
-        if self.reduction_method == 'energy':
-            idx = select_topk_by_energy(
-                points=points,
-                idx=idx,
-                K=self.group_max_points,
-                energies_idx=3,  # Assuming energy is at index 3
-            )  # idx: (B, G, K)
-        elif self.reduction_method == 'fps':
-            # farthest point sampling reduction of the group points (K_big --> K by farthest point sampling)
-            idx = select_topk_by_fps(
-                points=points,
-                idx=idx,
-                K=self.group_max_points,
-            )  # idx: (B, G, K)
+        # # Energy-based reduction of the group points (K_big --> K by taking top K energies)
+        # if self.reduction_method == 'energy':
+        #     idx = select_topk_by_energy(
+        #         points=points,
+        #         idx=idx,
+        #         K=self.group_max_points,
+        #         energies_idx=3,  # Assuming energy is at index 3
+        #     )  # idx: (B, G, K)
+        # elif self.reduction_method == 'fps':
+        #     # farthest point sampling reduction of the group points (K_big --> K by farthest point sampling)
+        #     idx = select_topk_by_fps(
+        #         points=points,
+        #         idx=idx,
+        #         K=self.group_max_points,
+        #     )  # idx: (B, G, K)
 
         # Gather semantic ids
         if semantic_id is not None:
