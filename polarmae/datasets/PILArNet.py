@@ -16,10 +16,10 @@ class PILArNet(Dataset):
     def __init__(
         self,
         data_path: str,
-        emin: float = 1.0e-6,
+        emin: float = 1.0e-2,
         emax: float = 20.0,
         energy_threshold: float = 0.13,
-        remove_low_energy_scatters: bool = False,
+        remove_low_energy_scatters: bool = True,
         maxlen: int = -1,
         min_points: int = 1024,
         return_semantic_id: bool = True,
@@ -184,15 +184,21 @@ class PILArNet(Dataset):
 
 class PILArNetDataModule(pl.LightningDataModule):
     _class_weights = None
+    _DATA_DIR = os.environ.get("PILARNET_DATA_DIR", None)
+
     def __init__(
         self,
-        data_path: str,
+        data_path: str = None,
         batch_size: int = 32,
         num_workers: int = 4,
         dataset_kwargs: dict = {},
         test_dataset_kwargs: dict = {},
     ):
         super().__init__()
+        if data_path is None:
+            if self._DATA_DIR is None:
+                raise ValueError("PILARNET_DATA_DIR is not set. Either set it or pass the data_path argument.")
+            data_path = self._DATA_DIR + '/*.h5'
         self.save_hyperparameters()
         self.persistent_workers = True if num_workers > 0 else False
 
