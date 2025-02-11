@@ -23,24 +23,23 @@ class SSLModel(BaseModel):
     def setup(self, stage: Optional[str] = None) -> None:
         super().setup(stage)
 
-        svm_validation: Dict[str, pl.LightningDataModule] = self.hparams.svm_validation  # type: ignore
-        for dataset_name, datamodule in svm_validation.items():
-            datamodule.setup("fit")
-            log.info(f"🍗  Setup {dataset_name} datamodule for SVM validation.")
-            for logger in self.loggers:
-                if isinstance(logger, WandbLogger):
-                    logger.experiment.define_metric(
-                        f"svm_train_acc_{dataset_name}", summary="last,max"
-                    )
-                    logger.experiment.define_metric(
-                        f"svm_val_acc_{dataset_name}", summary="last,max"
-                    )
+        log.info(f"🍗  Setup datamodule for SVM validation.")
+        for logger in self.loggers:
+            dataset_name = 'larnet' # for now :) TODO! REMOVE
+            if isinstance(logger, WandbLogger):
+                logger.experiment.define_metric(
+                    f"svm_train_acc_{dataset_name}", summary="last,max"
+                )
+                logger.experiment.define_metric(
+                    f"svm_val_acc_{dataset_name}", summary="last,max"
+                )
 
-    def validate(self, datamodule: pl.LightningDataModule):
+    def validate(self):
         # Lightning controls the `training` and `grad_enabled` state. Don't want to mess with it, but make sure it's correct.
         assert not self.training
         assert not torch.is_grad_enabled()
 
+        datamodule = self.trainer.datamodule
         max_tokens: int = self.hparams.svm_validation_max_tokens  # type: ignore
         def xy(dataloader):
             x_list = []
@@ -56,14 +55,14 @@ class SSLModel(BaseModel):
                 else None
             )
             num_labels = datamodule.num_seg_classes
-
             for i, batch in enumerate(dataloader):
                 data = batch['points'].cuda()
                 lengths = batch['lengths'].cuda()
                 labels_batch = batch['semantic_id'].cuda()
                 with torch.no_grad():
-                    out = self.encoder.prepare_tokens_with_masks(data, lengths, ids=labels_batch)
-                    x = self.encoder.transformer(out['x'], out['pos_embed'], out['emb_mask']).last_hidden_state.reshape(-1, self.encoder.embed_dim)
+                    out = self.encoder.prepare_tokens(data, lengths, ids=labels_batch)
+                    pos_embed = self.encoder.pos_embed(out['centers'])
+                    x = self.encoder.transformer(out['x'], pos_embed, out['emb_mask']).last_hidden_state.reshape(-1, self.encoder.embed_dim)
                     semantic_ids = out['id_groups'].reshape(-1, out['id_groups'].shape[2])
 
                     # Vectorized computation to replace the loop
@@ -92,8 +91,8 @@ class SSLModel(BaseModel):
             y = torch.cat(label_list, dim=0)[:max_tokens]
             return x, y
 
-        x_train, y_train = xy(datamodule.train_dataloader())  # type: ignore
-        x_val, y_val = xy(datamodule.val_dataloader())  # type: ignore
+        x_train, y_train = xy(datamodule.svm_train_dataloader())  # type: ignore
+        x_val, y_val = xy(datamodule.svm_val_dataloader())  # type: ignore
 
         # PCA down to 128 dimensions
         pca = PCA(n_components=128)
@@ -121,18 +120,13 @@ class SSLModel(BaseModel):
     def on_validation_epoch_end(self) -> None:
         assert not self.training
         assert not torch.is_grad_enabled()
-        # return
-        svm_validation: Dict[str, pl.LightningDataModule] = self.hparams.svm_validation  # type: ignore
-        for dataset_name, datamodule in svm_validation.items():
-            svm_train_acc, svm_val_acc, train_class_scores, val_class_scores = self.validate(datamodule)
-            self.log(f"svm_train_acc_{dataset_name}", svm_train_acc, sync_dist=True)
-            self.log(f"svm_val_acc_{dataset_name}", svm_val_acc, sync_dist=True)
-            for label, score in train_class_scores.items():
-                self.log(f"svm_train_class_f1_{dataset_name}_{label}", score, sync_dist=True)
-            for label, score in val_class_scores.items():
-                self.log(f"svm_val_class_f1_{dataset_name}_{label}", score, sync_dist=True)
 
-    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
-        # This is a bit of a hack. We want to avoid saving the datasets in the svm_validation dict,
-        # as this would store the entire dataset inside the checkpoint, blowing it up to multiple GBs.
-        checkpoint["hyper_parameters"]["svm_validation"] = {}
+        svm_train_acc, svm_val_acc, train_class_scores, val_class_scores = self.validate()
+        dataset_name = "larnet" # for now :) TODO! REMOVE
+        batch_size = self.trainer.datamodule.hparams.svm_batch_size
+        self.log(f"svm_train_acc_{dataset_name}", svm_train_acc, sync_dist=True, batch_size=batch_size)
+        self.log(f"svm_val_acc_{dataset_name}", svm_val_acc, sync_dist=True, batch_size=batch_size)
+        for label, score in train_class_scores.items():
+            self.log(f"svm_train_class_score_{dataset_name}_{label}", score, sync_dist=True, batch_size=batch_size)
+        for label, score in val_class_scores.items():
+            self.log(f"svm_val_class_score_{dataset_name}_{label}", score, sync_dist=True, batch_size=batch_size)

@@ -30,7 +30,6 @@ class PointMAE(SSLModel):
         transformation_scale_factor: torch.Tensor | List[float] | float = 1 / (768 * sqrt(3) / 2),
         transformation_rotate_dims: Optional[List[int]] = [0,1,2],
         transformation_rotate_degs: Optional[float] = None,
-        svm_validation: Dict[str, pl.LightningDataModule] = {},
         svm_validation_C=0.005,  # C=0.012 copied from Point-M2AE code
         svm_validation_max_tokens: int = 7500,
         fix_estimated_stepping_batches: Optional[int] = None,  # multi GPU bug fix
@@ -40,7 +39,6 @@ class PointMAE(SSLModel):
         super().__init__()
         self.save_hyperparameters()
         super().configure_transformations()
-        self.hparams.svm_validation = svm_validation
 
         self.encoder = encoder
         self.decoder = decoder
