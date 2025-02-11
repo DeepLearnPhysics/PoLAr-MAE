@@ -6,9 +6,9 @@ import torch.nn as nn
 from polarmae.layers.masking import VariablePointcloudMasking, masked_layer_norm
 from polarmae.layers.pos_embed import LearnedPositionalEncoder
 from polarmae.layers.rpb import RelativePositionalBias3D
+from polarmae.layers.grouping import fill_empty_indices
 from polarmae.layers.tokenizer import make_tokenizer
 from polarmae.layers.transformer import TransformerOutput, make_transformer
-
 
 class TransformerEncoder(nn.Module):
     def __init__(
@@ -69,6 +69,9 @@ class TransformerEncoder(nn.Module):
         gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
         large_gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[2], x.shape[3]))
 
+        masked_indices = fill_empty_indices(masked_indices)
+        unmasked_indices = fill_empty_indices(unmasked_indices)
+
         # out['masked_indices'] = masked_indices
         out['masked_mask'] = masked_mask
         out['masked_tokens'] = gather(out['x'], masked_indices)
@@ -81,6 +84,8 @@ class TransformerEncoder(nn.Module):
         out['unmasked_tokens'] = gather(out['x'], unmasked_indices)
         out['unmasked_centers'] = gather(out['centers'], unmasked_indices)
         out['unmasked_pos_embed'] = self.pos_embed(out['unmasked_centers'])
+        # out['unmasked_groups'] = large_gather(out['groups'], unmasked_indices)
+        # out['unmasked_groups_point_mask'] = gather(out['point_mask'], unmasked_indices)
         return out
     
     def prepare_tokens(

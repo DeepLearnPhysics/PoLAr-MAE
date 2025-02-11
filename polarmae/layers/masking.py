@@ -78,15 +78,23 @@ class VariablePointcloudMasking(nn.Module):
         in each batch are valid, this function computes a random masking (with ratio self.ratio)
         and returns, for each batch:
         - masked_indices: (B, max_mask) long tensor of positions (in random order) for masked tokens,
-                            padded (arbitrary values) beyond each batch’s valid count.
+                            padded with -1's beyond each batch's valid count.
         - masked_attn: (B, max_mask) bool tensor with True for real masked tokens.
         - unmasked_indices: (B, max_unmask) long tensor of positions for unmasked tokens,
-                            padded similarly.
+                            padded with -1's similarly.
         - unmasked_attn: (B, max_unmask) bool tensor with True for real unmasked tokens.
         
         To extract token features from centers, you can do:
-        masked_tokens = torch.gather(centers, 1, masked_indices.unsqueeze(-1).expand(-1, -1, centers.size(-1)))
-        unmasked_tokens = torch.gather(centers, 1, unmasked_indices.unsqueeze(-1).expand(-1, -1, centers.size(-1)))
+        masked_tokens = torch.gather(
+            centers,
+            1,
+            masked_indices.unsqueeze(-1).expand(-1, -1, centers.size(-1))
+        )
+        unmasked_tokens = torch.gather(
+            centers,
+            1,
+            unmasked_indices.unsqueeze(-1).expand(-1, -1, centers.size(-1))
+        )
         
         (Note: For batches with self.ratio==0, masked tokens will be empty.)
         """
@@ -101,8 +109,11 @@ class VariablePointcloudMasking(nn.Module):
         if self.ratio == 0:
             max_valid = lengths.max().item()
             all_indices = torch.arange(G, device=device).unsqueeze(0).expand(B, G)
-            unmasked_indices = all_indices[:, :max_valid]  # (B, max_valid)
+            unmasked_indices = all_indices[:, :max_valid].clone()
             unmasked_attn = torch.arange(max_valid, device=device).unsqueeze(0).expand(B, max_valid) < lengths.unsqueeze(1)
+            # Set unused unmasked indices to -1
+            unmasked_indices[~unmasked_attn] = -1
+
             # No masked tokens at all (empty tensors)
             masked_indices = torch.empty(B, 0, device=device, dtype=torch.long)
             masked_attn = torch.empty(B, 0, device=device, dtype=torch.bool)
@@ -120,14 +131,13 @@ class VariablePointcloudMasking(nn.Module):
         max_mask = num_mask.max()  # maximum masked tokens across batch
 
         # For each batch, the first num_mask[b] indices in sorted_indices are the masked tokens.
-        # We simply slice [:max_mask] and then later “attend” only to the first num_mask[b] per batch.
-        masked_indices = sorted_indices[:, :max_mask]  # (B, max_mask)
+        masked_indices = sorted_indices[:, :max_mask].clone()  # (B, max_mask)
         # Build an attention mask: each row is True for positions < num_mask[b] and False otherwise.
         masked_mask = torch.arange(max_mask, device=device).unsqueeze(0).expand(B, max_mask) < num_mask.unsqueeze(1)
+        # Set unused masked indices to -1
+        masked_indices[~masked_mask] = -1
 
         # --- Compute unmasked indices ---
-        # For each batch, the unmasked tokens are the remaining valid tokens, i.e. positions
-        # sorted_indices[b, num_mask[b]: lengths[b]].
         num_unmask = lengths - num_mask  # (B,)
         max_unmask = num_unmask.max()
 
@@ -137,8 +147,10 @@ class VariablePointcloudMasking(nn.Module):
         unmask_select_idx = num_mask.unsqueeze(1) + idx_range  # (B, max_unmask)
         # (Clamp not strictly necessary because idx_range is built from num_unmask, but just in case)
         unmask_select_idx = unmask_select_idx.clamp(max=G - 1)
-        unmasked_indices = torch.gather(sorted_indices, 1, unmask_select_idx)  # (B, max_unmask)
+        unmasked_indices = torch.gather(sorted_indices, 1, unmask_select_idx).clone()  # (B, max_unmask)
         unmasked_mask = idx_range < num_unmask.unsqueeze(1)
+        # Set unused unmasked indices to -1
+        unmasked_indices[~unmasked_mask] = -1
 
         return masked_indices, masked_mask, unmasked_indices, unmasked_mask
 
