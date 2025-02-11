@@ -191,8 +191,11 @@ class PILArNetDataModule(pl.LightningDataModule):
         data_path: str = None,
         batch_size: int = 32,
         num_workers: int = 4,
+        svm_batch_size: int = None,
+        svm_num_workers: int = None,
         dataset_kwargs: dict = {},
         test_dataset_kwargs: dict = {},
+        svm_dataset_kwargs: dict = {},
     ):
         super().__init__()
         if data_path is None:
@@ -228,13 +231,23 @@ class PILArNetDataModule(pl.LightningDataModule):
             self._category_to_seg_classes.pop("low energy deposit")
             self._seg_class_to_category.pop(4)
 
+        if self.hparams.svm_batch_size is not None:
+            train_svm_dataset_kwargs = self.hparams.dataset_kwargs.copy()
+            train_svm_dataset_kwargs.update(self.hparams.svm_dataset_kwargs)
+            self.svm_train_dataset = PILArNet(self.hparams.data_path, **train_svm_dataset_kwargs)
+
+            val_svm_dataset_kwargs = self.hparams.dataset_kwargs.copy()
+            val_svm_dataset_kwargs.update(self.hparams.test_dataset_kwargs)
+            val_svm_dataset_kwargs.update(self.hparams.svm_dataset_kwargs)
+            self.svm_val_dataset = PILArNet(val_dir, **val_svm_dataset_kwargs)
+
     def train_dataloader(self):
         if not hasattr(self, 'train_dataset'):
             self.setup()
         return DataLoader(
             self.train_dataset,
             batch_size=self.hparams.batch_size,
-            shuffle=False,
+            shuffle=True,
             drop_last=True,
             num_workers=self.hparams.num_workers,
             persistent_workers=self.persistent_workers,
@@ -249,6 +262,34 @@ class PILArNetDataModule(pl.LightningDataModule):
             self.val_dataset,
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
+            persistent_workers=self.persistent_workers,
+            collate_fn=PILArNet.collate_fn,
+            worker_init_fn=PILArNet.init_worker_fn,
+        )
+    
+    def svm_train_dataloader(self):
+        if self.hparams.svm_batch_size is None:
+            raise ValueError("svm_batch_size is not set")
+        if not hasattr(self, 'svm_train_dataset'):
+            self.setup()
+        return DataLoader(
+            self.svm_train_dataset,
+            batch_size=self.hparams.svm_batch_size,
+            num_workers=self.hparams.svm_num_workers,
+            persistent_workers=self.persistent_workers,
+            collate_fn=PILArNet.collate_fn,
+            worker_init_fn=PILArNet.init_worker_fn,
+        )
+    
+    def svm_val_dataloader(self):
+        if self.hparams.svm_batch_size is None:
+            raise ValueError("svm_batch_size is not set")
+        if not hasattr(self, 'svm_val_dataset'):
+            self.setup()
+        return DataLoader(
+            self.svm_val_dataset,
+            batch_size=self.hparams.svm_batch_size,
+            num_workers=self.hparams.svm_num_workers,
             persistent_workers=self.persistent_workers,
             collate_fn=PILArNet.collate_fn,
             worker_init_fn=PILArNet.init_worker_fn,
@@ -283,7 +324,6 @@ class PILArNetDataModule(pl.LightningDataModule):
             class_counts = class_counts[:-1]
 
         return class_counts.sum() / class_counts
-
 
 def log_transform(x, xmax=1, eps=1e-7):
     # [eps, xmax] -> [-1,1]
