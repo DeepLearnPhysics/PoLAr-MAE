@@ -23,6 +23,7 @@ class PointMAE(SSLModel):
         lr_scheduler_linear_warmup_start_lr: float = 1e-6,
         lr_scheduler_cosine_eta_min: float = 1e-6,
         lr_scheduler_stepping: str = 'step',
+        chamfer_norm: int = 2,
         freeze_last_layer_iters: int = -1,
         train_transformations: List[str] = ['center_and_scale', 'rotate'],
         val_transformations: List[str] = ['center_and_scale'],
@@ -52,22 +53,24 @@ class PointMAE(SSLModel):
 
         self.do_ae = loss_weights.get('ae', 0) > 0
 
+
+        self.tokens_processed = 0
+
     def compute_loss(self, points: torch.Tensor, lengths: torch.Tensor) -> Dict[str, torch.Tensor]:
         # encode toks
         out = self.encoder.prepare_tokens_with_masks(points, lengths)
 
         # run visible tokens through encoder
         tok_enc_um = self.encoder(out['unmasked_tokens'], out['unmasked_pos_embed'], out['unmasked_mask']).last_hidden_state
-
         tok_m = self.mask_token.expand_as(out['masked_mask'].unsqueeze(-1).expand(-1, -1, tok_enc_um.shape[2]))
 
         decoder_out = self.decoder(
             tok_m,
             out['masked_pos_embed'],
             out['masked_mask'],
-            tok_enc_um,
-            out['unmasked_pos_embed'],
-            out['unmasked_mask'],
+            kv=tok_enc_um,
+            pos_kv=out['unmasked_pos_embed'],
+            kv_mask=out['unmasked_mask'],
         ).last_hidden_state
         masked_output = decoder_out[out['masked_mask']]
 
@@ -76,26 +79,21 @@ class PointMAE(SSLModel):
 
         masked_groups = out['masked_groups'][out['masked_mask']]
         point_lengths = out['masked_groups_point_mask'][out['masked_mask']].sum(-1)
-        # print(point_lengths.shape, masked_groups.shape)
+
         chamfer_loss, _ = chamfer_distance(
                     upscaled.float(),
                     masked_groups.float(),
                     x_lengths=point_lengths,
                     y_lengths=point_lengths,
+                    norm=self.hparams.chamfer_norm
                 )
-        ae_loss = 0
-        # if self.do_ae:
-        #     upscaled_unmasked = self.increase_dim(encoder_output.transpose(0, 1)).transpose(0, 1)
-        #     upscaled_unmasked = upscaled_unmasked.reshape(upscaled_unmasked.shape[0], -1, self.encoder.num_channels)
-        #     unmasked_groups = out['groups'][unmasked]
-        #     unmasked_point_lengths = out['point_mask'][unmasked].sum(-1)
-        #     ae_loss, _ = chamfer_distance(
-        #         upscaled_unmasked.float(),
-        #         unmasked_groups.float(),
-        #         x_lengths=unmasked_point_lengths,
-        #         y_lengths=unmasked_point_lengths,
-        #     )
-        return {'chamfer': chamfer_loss, 'ae': ae_loss}
+
+        self.tokens_processed += out['emb_mask'].sum()
+        return {'chamfer': chamfer_loss}
+    
+    def optimizer_step(self, *args, **kwargs):
+        super().optimizer_step(*args, **kwargs)
+        self.log('tokens_processed', float(self.tokens_processed), sync_dist=True, on_epoch=True, on_step=True)
 
     def training_step(self, batch, batch_idx: int) -> torch.Tensor:
         points = batch['points']
