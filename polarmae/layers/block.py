@@ -25,6 +25,7 @@ class Block(nn.Module):
         drop_path=0.0,
         act_layer=nn.GELU,
         norm_layer=MaskedLayerNorm,
+        use_kv=False,
         # deprecated
         use_flash_self_attn=False,
     ):
@@ -36,6 +37,7 @@ class Block(nn.Module):
 
         # ATTENTION BLOCK
         self.norm1 = norm_layer(dim)
+        self.norm1_kv = norm_layer(dim) if use_kv else None
         self.attn = Attention(
             dim,
             num_heads=num_heads,
@@ -60,6 +62,7 @@ class Block(nn.Module):
         q_mask,
         qkv_attn_mask,
         kv=None,
+        kv_mask=None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -86,11 +89,13 @@ class Block(nn.Module):
         #         ffn = ffn * q_mask.unsqueeze(-1)
         #     q = q + self.drop_path(ffn, q_mask)
         #     return q, attn
+        if self.norm1_kv is not None:
+            assert kv is not None, "kv must be provided if use_kv is True"
 
         _q, attn = self.attn(
             q=self.norm1(q, q_mask), 
             qkv_attn_mask=qkv_attn_mask, 
-            kv=kv, 
+            kv=self.norm1_kv(kv, kv_mask) if kv is not None else None, 
         )
         q = q + self.drop_path(_q, q_mask)
 

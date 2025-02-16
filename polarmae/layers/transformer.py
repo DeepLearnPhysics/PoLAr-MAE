@@ -40,6 +40,7 @@ class Transformer(nn.Module):
         drop_path_uniform: bool = False,
         add_pos_at_every_layer=False,
         postnorm=True,
+        use_kv=False,
         # deprecated
         use_flash_self_attn=False,
     ):
@@ -63,6 +64,7 @@ class Transformer(nn.Module):
                     drop=drop_rate,
                     attn_drop=attn_drop_rate,
                     drop_path=dpr[i],
+                    use_kv=use_kv,
                 )
                 for i in range(depth)
             ]
@@ -124,6 +126,7 @@ class Transformer(nn.Module):
                 q_mask,
                 qkv_attn_mask,
                 kv,
+                kv_mask,
             )
             if return_hidden_states:
                 assert hidden_states is not None
@@ -146,6 +149,7 @@ def make_transformer(
     drop_path_uniform: bool = False,
     add_pos_at_every_layer: bool = False,
     postnorm: bool = True,
+    use_kv: bool = False,
     prompt_tuning: bool = False,
     **kwargs,
 ) -> Transformer:
@@ -159,6 +163,7 @@ def make_transformer(
         drop_path_uniform=drop_path_uniform,
         add_pos_at_every_layer=add_pos_at_every_layer,
         postnorm=postnorm,
+        use_kv=use_kv,
     )
     transformer_config.update(kwargs)
     return globals()[name](**transformer_config)

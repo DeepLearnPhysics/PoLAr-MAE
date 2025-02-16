@@ -16,8 +16,7 @@ class Attention(nn.Module):
         qk_scale=None,
         attn_drop=0.0,
         proj_drop=0.0,
-        # deprecated
-        use_flash_self_attn=False,
+        use_flash_self_attn=True,
     ):
         super().__init__()
         self.dim = dim
@@ -33,6 +32,8 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
+        self.use_flash_self_attn = use_flash_self_attn
+
     def q_proj(self, x):
         return F.linear(x, self.qkv.weight[:self.dim], self.qkv.bias[:self.dim])
 
@@ -41,38 +42,41 @@ class Attention(nn.Module):
 
     def v_proj(self, x):
         return F.linear(x, self.qkv.weight[2*self.dim:], self.qkv.bias[2*self.dim:])
-    
-    def self_attention(self, x, x_attn_mask=None):
+
+    def self_attention(self, x, x_attn_mask=None, rpb=None):
         # Reshape Q, K, V
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4) # (B, H, 3, N, D)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )  # (B, H, 3, N, D)
         q, k, v = qkv[0], qkv[1], qkv[2]  # (B, H, N, D), (B, H, N, D), (B, H, N, D)
 
-        # Prepare attn_mask
-        # if x_attn_mask is not None:
-        #     # Adjust attn_mask dimensions to (B * H, N, M)
-        #     attn_mask = x_attn_mask.squeeze(1).repeat_interleave(
-        #         self.num_heads, dim=0
-        #     )
+        if self.use_flash_self_attn:
+            attn_output = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=x_attn_mask, dropout_p=self.attn_drop.p
+            )
 
-        # Reshape for scaled_dot_product_attention
-        # q = q.reshape(B * self.num_heads, N, self.head_dim)
-        # k = k.reshape(B * self.num_heads, N, self.head_dim)
-        # v = v.reshape(B * self.num_heads, N, self.head_dim)
-
-        attn_output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=x_attn_mask, dropout_p=self.attn_drop.p
-        )
-
-        # Reshape back
-        attn_output = attn_output.reshape(B, self.num_heads, N, self.head_dim)
-        x = attn_output.transpose(1, 2).reshape(B, N, C)
-        _attn = None
+            # Reshape back
+            attn_output = attn_output.reshape(B, self.num_heads, N, self.head_dim)
+            x = attn_output.transpose(1, 2).reshape(B, N, C)
+            _attn = None
+        else:
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            if rpb is not None:
+                attn = attn + rpb
+            if x_attn_mask is not None:
+                attn = attn + (~x_attn_mask).to(attn.dtype).masked_fill(~x_attn_mask, -1e9)
+            attn = attn.softmax(dim=-1)
+            _attn = attn
+            attn = self.attn_drop(attn)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
 
         x = self.proj(x)
         x = self.proj_drop(x)
         return x, _attn
-    
+
     # def self_plus_cross_attention(self, x, y, x_attn_mask=None, y_attn_mask=None, rpb=None):
     #     B, N, C = x.shape
     #     L = y.shape[1]

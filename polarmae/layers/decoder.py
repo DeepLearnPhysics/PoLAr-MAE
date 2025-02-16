@@ -17,6 +17,7 @@ class TransformerDecoder(nn.Module):
         super().__init__()
         self.transformer = make_transformer(
             arch_name=arch,
+            use_kv=True,
             **transformer_kwargs,
         )
         self.header = header # not used currently

@@ -26,6 +26,7 @@ class TransformerEncoder(nn.Module):
 
         self.transformer = make_transformer(
             arch_name=arch,
+            use_kv=False,
             **transformer_kwargs,
         )
         self.num_channels = num_channels
@@ -69,8 +70,8 @@ class TransformerEncoder(nn.Module):
         gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
         large_gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[2], x.shape[3]))
 
-        masked_indices = fill_empty_indices(masked_indices)
-        unmasked_indices = fill_empty_indices(unmasked_indices)
+        # masked_indices = fill_empty_indices(masked_indices)
+        # unmasked_indices = fill_empty_indices(unmasked_indices)
 
         # out['masked_indices'] = masked_indices
         out['masked_mask'] = masked_mask
@@ -78,14 +79,15 @@ class TransformerEncoder(nn.Module):
         out['masked_centers'] = gather(out['centers'], masked_indices)
         out['masked_pos_embed'] = self.pos_embed(out['masked_centers'])
         out['masked_groups'] = large_gather(out['groups'], masked_indices)
-        out['masked_groups_point_mask'] = gather(out['point_mask'], masked_indices)
+        out['masked_groups_point_mask'] = gather(out['point_mask'], masked_indices) * out['masked_mask'].unsqueeze(-1)
+
         # out['unmasked_indices'] = unmasked_indices
         out['unmasked_mask'] = unmasked_mask
         out['unmasked_tokens'] = gather(out['x'], unmasked_indices)
         out['unmasked_centers'] = gather(out['centers'], unmasked_indices)
         out['unmasked_pos_embed'] = self.pos_embed(out['unmasked_centers'])
         # out['unmasked_groups'] = large_gather(out['groups'], unmasked_indices)
-        # out['unmasked_groups_point_mask'] = gather(out['point_mask'], unmasked_indices)
+        # out['unmasked_groups_point_mask'] = gather(out['point_mask'], unmasked_indices) * out['unmasked_mask'].unsqueeze(-1)
         return out
     
     def prepare_tokens(
