@@ -135,7 +135,7 @@ class VariablePointcloudMasking(nn.Module):
         # Build an attention mask: each row is True for positions < num_mask[b] and False otherwise.
         masked_mask = torch.arange(max_mask, device=device).unsqueeze(0).expand(B, max_mask) < num_mask.unsqueeze(1)
         # Set unused masked indices to -1
-        masked_indices[~masked_mask] = -1
+        # masked_indices[~masked_mask] = -1
 
         # --- Compute unmasked indices ---
         num_unmask = lengths - num_mask  # (B,)
@@ -150,7 +150,7 @@ class VariablePointcloudMasking(nn.Module):
         unmasked_indices = torch.gather(sorted_indices, 1, unmask_select_idx).clone()  # (B, max_unmask)
         unmasked_mask = idx_range < num_unmask.unsqueeze(1)
         # Set unused unmasked indices to -1
-        unmasked_indices[~unmasked_mask] = -1
+        # unmasked_indices[~unmasked_mask] = -1
 
         return masked_indices, masked_mask, unmasked_indices, unmasked_mask
 
