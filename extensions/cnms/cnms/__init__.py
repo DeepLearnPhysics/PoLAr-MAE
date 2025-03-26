@@ -7,6 +7,7 @@ from pytorch3d.ops import ball_query
 from . import _ext
 import torch
 
+@torch.no_grad()
 def cnms(centroids, radius, overlap_factor, K=None, lengths=None):
     """
     Perform Centrality-Based Non-Maximum Suppression (C-NMS).
@@ -42,12 +43,13 @@ def cnms(centroids, radius, overlap_factor, K=None, lengths=None):
         lengths = torch.full(
             (N,),
             fill_value=P,
-            dtype=torch.int64,
+            dtype=torch.int32,
             device=centroids.device
         )
 
 
     query_radius = 2 * radius * overlap_factor
+    
     _, idx, _ = ball_query(
         p1=centroids,
         p2=centroids,
@@ -62,23 +64,14 @@ def cnms(centroids, radius, overlap_factor, K=None, lengths=None):
     _, sorted_indices = overlap_counts.sort(
         dim=-1, descending=True
     )  # (N, P)
-
-
     # find retained points
     ignore_idx = -1
-    retain = torch.zeros((N, P), device=centroids.device).bool()
-    retain = greedy_reduction(sorted_indices, idx, lengths, ignore_idx, retain)
+    retain = _ext.greedy_reduction(sorted_indices, idx, lengths, ignore_idx)
+
 
     # reindex group centers to be retained points first, then discarded points after so we can use lengths1
-    idx = torch.argsort((~retain).long(), dim=1)  # shape [G, K]
-    centroids = centroids.gather(dim=1, index=idx.unsqueeze(-1).expand(-1, -1, D)) # (N, P, D)
+    idx = torch.argsort((~retain).float(), dim=1)  # shape [G, K]
+    centroids = centroids.gather(dim=1, index=idx.long().unsqueeze(-1).expand(-1, -1, D)) # (N, P, D)
     lengths = retain.sum(dim=1)
-    centroids = centroids[:,:lengths.max()]
 
-    return centroids, lengths
-
-def greedy_reduction(sorted_indices, idx, lengths, ignore_idx, out=None):
-    N, P = sorted_indices.shape
-    if out is None:
-        out = torch.zeros((N, P), device=sorted_indices.device).bool()
-    return _ext.greedy_reduction(sorted_indices, idx, lengths, ignore_idx, out)
+    return centroids, lengths, idx
