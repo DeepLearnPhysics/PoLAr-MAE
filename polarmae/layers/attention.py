@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,7 @@ import torch.nn.functional as F
 __all__ = ["Attention", "prepare_attn_masks"]
 
 class Attention(nn.Module):
-    """Attention with optional cross-attention"""
+    """Attention with optional cross-attention and support for cu_seqlens"""
     def __init__(
         self,
         dim,
@@ -16,6 +16,8 @@ class Attention(nn.Module):
         qk_scale=None,
         attn_drop=0.0,
         proj_drop=0.0,
+        use_flash_attn=True,
+        # deprecated
         use_flash_self_attn=True,
     ):
         super().__init__()
@@ -32,17 +34,17 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        self.use_flash_self_attn = use_flash_self_attn
+        self.use_flash_attn = use_flash_attn
 
     def q_proj(self, x):
-        return F.linear(x, self.qkv.weight[:self.dim], self.qkv.bias[:self.dim])
+        return F.linear(x, self.qkv.weight[:self.dim], self.qkv.bias[:self.dim] if self.qkv.bias is not None else None)
 
     def k_proj(self, x):
-        return F.linear(x, self.qkv.weight[self.dim:2*self.dim], self.qkv.bias[self.dim:2*self.dim])
+        return F.linear(x, self.qkv.weight[self.dim:2*self.dim], self.qkv.bias[self.dim:2*self.dim] if self.qkv.bias is not None else None)
 
     def v_proj(self, x):
-        return F.linear(x, self.qkv.weight[2*self.dim:], self.qkv.bias[2*self.dim:])
-
+        return F.linear(x, self.qkv.weight[2*self.dim:], self.qkv.bias[2*self.dim:] if self.qkv.bias is not None else None)
+    
     def self_attention(self, x, x_attn_mask=None, rpb=None):
         # Reshape Q, K, V
         B, N, C = x.shape
@@ -50,10 +52,10 @@ class Attention(nn.Module):
             self.qkv(x)
             .reshape(B, N, 3, self.num_heads, self.head_dim)
             .permute(2, 0, 3, 1, 4)
-        )  # (B, H, 3, N, D)
+        )  # (3, B, H, N, D)
         q, k, v = qkv[0], qkv[1], qkv[2]  # (B, H, N, D), (B, H, N, D), (B, H, N, D)
 
-        if self.use_flash_self_attn:
+        if self.use_flash_attn:
             attn_output = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=x_attn_mask, dropout_p=self.attn_drop.p
             )
@@ -63,7 +65,7 @@ class Attention(nn.Module):
             x = attn_output.transpose(1, 2).reshape(B, N, C)
             _attn = None
         else:
-            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = (q @ k.transpose(-2, -1)) * self.scale 
             if rpb is not None:
                 attn = attn + rpb
             if x_attn_mask is not None:
@@ -76,48 +78,7 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x, _attn
-
-    # def self_plus_cross_attention(self, x, y, x_attn_mask=None, y_attn_mask=None, rpb=None):
-    #     B, N, C = x.shape
-    #     L = y.shape[1]
-
-    #     # run both x & y thru qkv. could be quicker but
-    #     x = torch.cat([x, y], dim=1)
-    #     qkv = self.qkv(x).reshape(B, N+L, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-    #     q, k, v = qkv[0], qkv[1], qkv[2]
-
-
-    #     """ ------------------------------------------------------------------------ """
-    #     """                      Cross attention of y on x and y                     """
-    #     """ ------------------------------------------------------------------------ """
-    #     attn = (q[:, :, N:]) @ k[:, :, :].transpose(-2, -1) * self.scale
-    #     if x_attn_mask is not None:
-    #         attn = attn + torch.cat([x_attn_mask, y_attn_mask], dim=-1)
-    #     attn = attn.softmax(dim=-1)
-    #     attn = self.attn_drop(attn)
-
-    #     y = (attn @ v).transpose(1, 2).reshape(B, L, C)
-    #     y = self.proj(y)
-    #     y = self.proj_drop(y)
-
-    #     """ ------------------------------------------------------------------------ """
-    #     """                         Self attention of x on x                         """
-    #     """ ------------------------------------------------------------------------ """
-    #     attn = (q[:, :, :N]) @ k[:, :, :N].transpose(-2, -1) * self.scale
-    #     if rpb is not None:
-    #         attn = attn + rpb
-    #     if x_attn_mask is not None:
-    #         attn = attn + x_attn_mask
-    #     attn = attn.softmax(dim=-1)
-    #     attn = self.attn_drop(attn)
-
-    #     x = (attn @ v[:, :, :N]).transpose(1, 2).reshape(B, N, C)
-    #     x = self.proj(x)
-    #     x = self.proj_drop(x)
-    #     _attn = None
-    #     return x, y, _attn
-
-
+    
     def cross_attention(self, q, kv, attn_mask=None):
         q = self.q_proj(q)
         k = self.k_proj(kv)
@@ -128,9 +89,21 @@ class Attention(nn.Module):
         k = k.reshape(B, Nv, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.reshape(B, Nv, self.num_heads, self.head_dim).transpose(1, 2)
 
-        x = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, dropout_p=self.attn_drop.p
-        )
+
+        if self.use_flash_attn and B < 200000: # crashes on huge batch sizes
+            x = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask, dropout_p=self.attn_drop.p
+            )
+        else: # no flash attn :-(
+            qk = torch.einsum("b h n d, b h m d -> b h n m", q, k)
+            qk = qk * self.scale
+            if attn_mask is not None:
+                qk = qk + attn_mask
+            qk = qk.softmax(dim=-1)
+            qk = self.attn_drop(qk)
+            x = torch.einsum("b h n m, b h m d -> b h n d", qk, v)
+
+
         x = x.transpose(1, 2).reshape(B, Nq, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -141,20 +114,18 @@ class Attention(nn.Module):
     def forward(self, q, qkv_attn_mask=None, kv=None):
         """
         Args:
-            q (torch.Tensor): Queries of shape (B, N, C).
-            y (torch.Tensor, optional): If provided, should be of shape (B, M, C) and used for K, V.
-                                         Otherwise, K, V come from x (self-attention).
-            x_attn_mask (torch.Tensor, optional): Attention mask for x.
-            y_attn_mask (torch.Tensor, optional): Attention mask for y.
-            rpb (torch.Tensor, optional): Relative position bias.
+            q (torch.Tensor): Queries of shape (B, N, C) or (sum(seqlens), C) if using cu_seqlens.
+            qkv_attn_mask (torch.Tensor, optional): Attention mask.
+            kv (torch.Tensor, optional): If provided, should be for K, V. Otherwise, K, V come from x (self-attention).
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Output tensors after attention.
+            Tuple[torch.Tensor, torch.Tensor]: Output tensors after attention.
         """
-        if kv is None: # Regular self-attention
+        if kv is None:  # Regular self-attention
             x, _attn = self.self_attention(q, qkv_attn_mask)
-        else: # Self attention on q, cross attention of q&kv on kv
+        else:  # Cross attention
             x, _attn = self.cross_attention(q, kv, qkv_attn_mask)
+                
         return x, _attn
 
 
@@ -185,12 +156,25 @@ def _create_attn_mask(q_mask: torch.Tensor, kv_mask: torch.Tensor=None) -> torch
     )
     return attn_mask
     
+
 def prepare_attn_mask(
         q: torch.Tensor,
         q_mask: torch.Tensor,
         kv: torch.Tensor | None = None,
         kv_mask: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor | None]:
+    """
+    Prepare attention mask for transformer.
+
+    Args:
+        q: Query tensor (B, N, C)
+        q_mask: Query mask (B, N)
+        kv: Key/value tensor (B, M, C)
+        kv_mask: Key/value mask (B, M)
+
+    Returns:
+        attn_mask: Attention mask (B, 1, N, N) or (B, 1, N, N+M)
+    """
     B, Nq, C = q.shape
 
     # make sure masks are of the correct shape
