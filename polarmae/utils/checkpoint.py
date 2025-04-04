@@ -142,6 +142,7 @@ def load_finetune_checkpoint(
     checkpoint_path: str,
     data_path: str = None,
     pretrained_ckpt_path: str = None,
+    load_state_dict: bool = True,
 ):
     ckpt = torch.load(checkpoint_path, weights_only=False)
     hparams = ckpt["hyper_parameters"]
@@ -179,10 +180,12 @@ def load_finetune_checkpoint(
     trainer.datamodule = datamodule
 
     model.setup()
-    log.info(
-        "Loading state dict. There should be no missing or unexpected keys below here."
-    )
-    missed, unexpected = model.load_state_dict(ckpt["state_dict"])
-    log.info(f"Missed: {missed}")
-    log.info(f"Unexpected: {unexpected}")
+
+    if load_state_dict:
+        log.info(
+            "Loading state dict. There should be no missing or unexpected keys below here."
+        )
+        missed, unexpected = model.load_state_dict(ckpt["state_dict"])
+        log.info(f"Missed: {missed}")
+        log.info(f"Unexpected: {unexpected}")
     return model

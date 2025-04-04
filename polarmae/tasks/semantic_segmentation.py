@@ -1,3 +1,5 @@
+import polarmae.utils.pytorch_monkey_patch
+
 from omegaconf import OmegaConf
 import pytorch_lightning
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
@@ -20,11 +22,16 @@ if __name__ == "__main__":
             "log_every_n_steps": 10,
             "callbacks": [
                 LearningRateMonitor(),
-                ModelCheckpoint(save_on_train_epoch_end=True),
+                ModelCheckpoint(save_on_train_epoch_end=True, save_last=True),
                 ModelCheckpoint(
-                    monitor="val_cat_miou",
+                    monitor="val_f1_score_m",
                     mode="max",
-                    filename="{epoch}-{step}-{val_cat_miou:.4f}",
+                    filename="{epoch}-{step}-f1{val_f1_score_m:.4f}",
+                ),
+                ModelCheckpoint(
+                    monitor="val_ce",
+                    mode="min",
+                    filename="{epoch}-{step}-ce{val_ce:.4f}",
                 ),
             ],
         },

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from polarmae.layers.grouping import PointcloudGrouping
 from polarmae.layers.pointnet import MaskedMiniPointNet
-
+from polarmae.layers.masking import VariablePointcloudMasking
 __all__ = [
     'PointcloudTokenizer',
     'make_tokenizer',
@@ -32,6 +32,8 @@ class PointcloudTokenizer(nn.Module):
         reduction_method: str = 'energy',
         use_relative_features: bool = False,
         normalize_group_centers: bool = False,
+        masking_ratio: float = 0.6,
+        masking_type: Literal['rand'] = 'rand'
     ) -> None:
         super().__init__()
         self.token_dim = token_dim
@@ -49,63 +51,92 @@ class PointcloudTokenizer(nn.Module):
 
         self.embedding = MaskedMiniPointNet(num_channels, token_dim)
 
+        self.masking = VariablePointcloudMasking(
+            ratio=masking_ratio, type=masking_type
+        )
+
+
     def forward(
         self,
         points: torch.Tensor,
         lengths: torch.Tensor,
         semantic_id: torch.Tensor | None = None,
         endpoints: torch.Tensor | None = None,
-        return_point_info: bool = False,
+        augmented_points: torch.Tensor | None = None,
+        encode_all: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # points: (B, N, num_channels)
         # lengths: (B,)
-        group: torch.Tensor
-        group_center: torch.Tensor
         tokens: torch.Tensor
         lengths: torch.Tensor
-        semantic_id_groups: torch.Tensor | None
 
         grouping_out = self.grouping(
-            points, lengths, semantic_id, endpoints)
+            points, lengths, semantic_id, endpoints, augmented_points)
         
-        groups = grouping_out['groups']
-        point_mask = grouping_out['point_mask']
-        group_center = grouping_out['group_centers']
-        embedding_mask = grouping_out['embedding_mask']
-        semantic_id_groups = grouping_out['semantic_id_groups']
-        endpoints_groups = grouping_out['endpoints_groups']
-        idx = grouping_out['idx']
-        
-        # just embed nonzero groups
-        out = self.embedding(groups[embedding_mask], point_mask[embedding_mask].unsqueeze(1))
-        tokens = torch.zeros(
-            groups.shape[0],groups.shape[1],
-            self.token_dim,
-            device=out.device,
-            dtype=out.dtype,
-        )
-        tokens[embedding_mask] = out
+        masked_indices, masked_mask, unmasked_indices, unmasked_mask, unmasked_groups, unmasked_point_mask = [None] * 6
+        if encode_all:
+            groups = grouping_out['groups']
+            point_mask = grouping_out['point_mask']
+            emb_mask = grouping_out['embedding_mask']
 
-        if return_point_info:
-            return (
-                tokens,
-                group_center,
-                embedding_mask,
-                semantic_id_groups,
-                endpoints_groups,
-                groups,
-                point_mask,
-                idx,
-            )
+            augmented_groups = grouping_out['augmented_groups']
         else:
-            return (
-                tokens,
-                group_center,
-                embedding_mask,
-                semantic_id_groups,
-                endpoints_groups,
-                idx,
+            masked_indices, masked_mask, unmasked_indices, unmasked_mask = self.masking(grouping_out['embedding_mask'].sum(-1))
+
+            gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
+            large_gather = lambda x, idx: torch.gather(x, 1, idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[2], x.shape[3]))
+
+            unmasked_groups = large_gather(
+                grouping_out["groups"], unmasked_indices
             )
+            unmasked_point_mask = gather(grouping_out['point_mask'], unmasked_indices)
+
+            groups = unmasked_groups
+            point_mask = unmasked_point_mask
+            emb_mask = unmasked_mask 
+
+            augmented_groups = grouping_out['augmented_groups']
+            if augmented_groups is not None:
+                augmented_groups = large_gather(augmented_groups, unmasked_indices)
+
+        # just embed nonzero visible groups (no need to encode the others !)
+        flattened_tokens = self.embedding(
+            groups[emb_mask], point_mask[emb_mask].unsqueeze(1)
+        )
+        tokens = torch.zeros(
+            groups.shape[0],
+            groups.shape[1],
+            self.token_dim,
+            device=flattened_tokens.device,
+            dtype=flattened_tokens.dtype,
+        )
+        tokens[emb_mask] = flattened_tokens
+
+        # create ANOTHER set of visible tokens -- augmented by some transformation
+        augmented_tokens = None
+        if augmented_groups is not None:
+            flattened_augmented_tokens = self.embedding(
+                augmented_groups[emb_mask], point_mask[emb_mask].unsqueeze(1)
+            )
+            augmented_tokens = torch.zeros(
+                augmented_groups.shape[0],
+                augmented_groups.shape[1],
+                self.token_dim,
+                device=flattened_augmented_tokens.device,
+                dtype=flattened_augmented_tokens.dtype,
+            )
+            augmented_tokens[emb_mask] = flattened_augmented_tokens
+
+
+        grouping_out["tokens"] = tokens
+        grouping_out["masked_indices"] = masked_indices
+        grouping_out["masked_mask"] = masked_mask
+        grouping_out["unmasked_indices"] = unmasked_indices
+        grouping_out["unmasked_mask"] = unmasked_mask
+        grouping_out["unmasked_groups"] = unmasked_groups
+        grouping_out["unmasked_point_mask"] = unmasked_point_mask
+        grouping_out["augmented_tokens"] = augmented_tokens
+        return grouping_out
 
     @staticmethod
     def extract_model_checkpoint(path: str):
@@ -134,10 +165,10 @@ def _2p5voxel_tokenizer(num_channels=4, embed_dim=384, **kwargs) -> PointcloudTo
     config = dict(
         num_init_groups=2048,
         context_length=1024,
-        group_max_points=16,
+        group_max_points=24,
         group_radius=2.5 / (768 * sqrt(3) / 2), # voxel_radius * scaling_constant
         group_upscale_points=64,
-        overlap_factor=0.73,
+        overlap_factor=0.75,
         reduction_method='fps',
     )
     config.update(kwargs)

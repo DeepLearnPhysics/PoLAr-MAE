@@ -1,10 +1,14 @@
+import polarmae.utils.pytorch_monkey_patch
 import torch
 from omegaconf import OmegaConf
 import pytorch_lightning
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.cli import LightningCLI
+import os
 
+getenv = lambda x: os.environ[x]
 OmegaConf.register_new_resolver("eval", eval)
+OmegaConf.register_new_resolver("getenv", getenv)
 
 from polarmae.datasets import PILArNetDataModule
 from polarmae.models.ssl import PoLArMAE
@@ -16,7 +20,7 @@ if __name__ == "__main__":
             "default_root_dir": "artifacts",
             "accelerator": "gpu",
             "devices": 4,
-            "precision": "bf16-mixed",
+            "precision": "32",
             "max_epochs": 800,
             "log_every_n_steps": 10,
             "check_val_every_n_epoch": 200,
@@ -28,9 +32,9 @@ if __name__ == "__main__":
                     monitor="loss/val",
                 ),
                 ModelCheckpoint(
-                    monitor="svm_val_acc_larnet",
+                    monitor="svm_val_acc",
                     mode="max",
-                    filename="{epoch}-{step}-{svm_val_acc_larnet:.4f}",
+                    filename="{epoch}-{step}-{svm_val_acc:.4f}",
                 ),
                 # ModelCheckpoint(
                 #     save_top_k=4,

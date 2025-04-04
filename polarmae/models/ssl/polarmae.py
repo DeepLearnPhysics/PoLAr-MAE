@@ -71,14 +71,15 @@ class PoLArMAE(SSLModel):
 
         # Energy that takes in encoder.embed_dim*2 and outputs 32x1 (32 pt, 1 energy channel)
         self.embed_dim = encoder.embed_dim
+        assert self.embed_dim % 4 == 0, "embed_dim must be divisible by 4"
         self.equivariant_patch_encoder = MaskedMiniPointNet(
             channels=3,
-            feature_dim=self.embed_dim,
+            feature_dim=self.embed_dim // 4,
             equivariant=True
         )
 
         self.energy_decoder = nn.Conv1d(
-            2 * self.embed_dim,
+            self.embed_dim + self.embed_dim // 4, # 384 + 96
             1 * encoder.tokenizer.grouping.group_max_points,
             1,
         )  # 2*embed_dim (1 embed_dim for encoded positions, 1 for regressed masked tokens)
@@ -104,7 +105,6 @@ class PoLArMAE(SSLModel):
         ).last_hidden_state
         masked_output = decoder_out[out['masked_mask']]
 
-
         # full patch reconstruction task
         upscaled = self.increase_dim(masked_output.transpose(0, 1)).transpose(0, 1)
         upscaled = upscaled.reshape(upscaled.shape[0], -1, self.mae_channels)
@@ -128,7 +128,7 @@ class PoLArMAE(SSLModel):
         # concatenate output with encoded masked tokens
         decoder_input = torch.cat(
             [equivariant_patch_encoder_output, masked_output], dim=1
-        )
+        ) # (B*G, 384 + 96, S)
 
         # decode energy from embeddings
         decoded_energy = self.energy_decoder(
@@ -142,10 +142,6 @@ class PoLArMAE(SSLModel):
         self.tokens_processed += out['emb_mask'].sum()
         return {'chamfer': chamfer_loss, 'energy': energy_loss}
     
-    def optimizer_step(self, *args, **kwargs):
-        super().optimizer_step(*args, **kwargs)
-        self.log('tokens_processed', float(self.tokens_processed), sync_dist=True, on_epoch=True, on_step=True)
-
     def training_step(self, batch, batch_idx: int) -> torch.Tensor:
         points = batch['points']
         lengths = batch['lengths']
@@ -154,6 +150,14 @@ class PoLArMAE(SSLModel):
         self.log_losses(loss_dict, prefix='loss/train_')
         loss = sum(loss_dict[k] * self.hparams.loss_weights.get(k, 1.0) for k in loss_dict.keys())
         self.log('loss/train', loss, sync_dist=True, on_epoch=True, on_step=True, prog_bar=True)
+
+        self.log(
+            "tokens_processed",
+            float(self.tokens_processed),
+            sync_dist=True,
+            on_epoch=True,
+            on_step=True,
+        )
         return loss
     
     def validation_step(self, batch, batch_idx: int) -> torch.Tensor:
@@ -164,4 +168,11 @@ class PoLArMAE(SSLModel):
         self.log_losses(loss_dict, prefix='loss/val_')
         loss = sum(loss_dict[k] * self.hparams.loss_weights.get(k, 1.0) for k in loss_dict.keys())
         self.log('loss/val', loss, sync_dist=True, on_epoch=True, on_step=False)
+        self.log(
+            "tokens_processed",
+            float(self.tokens_processed),
+            sync_dist=True,
+            on_epoch=True,
+            on_step=True,
+        )
         return loss

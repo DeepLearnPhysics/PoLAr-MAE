@@ -41,6 +41,8 @@ class Transformer(nn.Module):
         add_pos_at_every_layer=False,
         postnorm=True,
         use_kv=False,
+        use_flash_attn=True,
+        norm_layer=MaskedLayerNorm,
         # deprecated
         use_flash_self_attn=False,
     ):
@@ -64,7 +66,11 @@ class Transformer(nn.Module):
                     drop=drop_rate,
                     attn_drop=attn_drop_rate,
                     drop_path=dpr[i],
+                    use_flash_attn=use_flash_attn,
                     use_kv=use_kv,
+                    norm_layer=norm_layer,
+                    # deprecated
+                    use_flash_self_attn=use_flash_self_attn,
                 )
                 for i in range(depth)
             ]
@@ -102,6 +108,7 @@ class Transformer(nn.Module):
         return_hidden_states: bool = False,
         return_attentions: bool = False,
         return_ffns: bool = False,
+        final_norm: bool = True,
     ) -> TransformerOutput:
         """
         If memory is provided, the blocks will perform cross-attention:
@@ -135,7 +142,8 @@ class Transformer(nn.Module):
                 assert attentions is not None
                 attentions.append(attn)
 
-        q = self.norm(q, q_mask)
+        if final_norm:
+            q = self.norm(q, q_mask)
 
         return TransformerOutput(q, hidden_states, attentions, ffns)
 
@@ -149,7 +157,6 @@ def make_transformer(
     drop_path_uniform: bool = False,
     add_pos_at_every_layer: bool = False,
     postnorm: bool = True,
-    use_kv: bool = False,
     prompt_tuning: bool = False,
     **kwargs,
 ) -> Transformer:
@@ -163,7 +170,6 @@ def make_transformer(
         drop_path_uniform=drop_path_uniform,
         add_pos_at_every_layer=add_pos_at_every_layer,
         postnorm=postnorm,
-        use_kv=use_kv,
     )
     transformer_config.update(kwargs)
     return globals()[name](**transformer_config)

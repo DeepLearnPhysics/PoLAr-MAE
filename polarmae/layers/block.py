@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from polarmae.layers.attention import Attention
-from polarmae.layers.masking import MaskedDropPath, MaskedLayerNorm
+from polarmae.layers.masking import MaskedDropPath, MaskedLayerNorm, tiny_value_of_dtype
 from polarmae.layers.mlp import Mlp
 
 
@@ -25,9 +25,10 @@ class Block(nn.Module):
         drop_path=0.0,
         act_layer=nn.GELU,
         norm_layer=MaskedLayerNorm,
+        use_flash_attn=True,
         use_kv=False,
         # deprecated
-        use_flash_self_attn=False,
+        use_flash_self_attn=True,
     ):
         super().__init__()
 
@@ -44,7 +45,10 @@ class Block(nn.Module):
             qkv_bias=qkv_bias,
             qk_scale=qk_scale,
             attn_drop=attn_drop,
-            proj_drop=drop
+            proj_drop=drop,
+            use_flash_attn=use_flash_attn,
+            # deprecated
+            use_flash_self_attn=use_flash_self_attn
         )
 
         # MLP BLOCK
@@ -92,10 +96,14 @@ class Block(nn.Module):
         if self.norm1_kv is not None:
             assert kv is not None, "kv must be provided if use_kv is True"
 
+        # apply norm1 to both q and kv together!
+        q_normed = self.norm1(q, q_mask)
+        kv_normed = self.norm1_kv(kv, kv_mask) if self.norm1_kv is not None else None
+
         _q, attn = self.attn(
-            q=self.norm1(q, q_mask), 
+            q=q_normed, 
             qkv_attn_mask=qkv_attn_mask, 
-            kv=self.norm1_kv(kv, kv_mask) if kv is not None else None, 
+            kv=kv_normed, 
         )
         q = q + self.drop_path(_q, q_mask)
 

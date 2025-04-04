@@ -87,7 +87,9 @@ class PointNetFeatureUpsampling(nn.Module):
             bn = self.mlp_bns[i]
             new_points = conv(new_points)
             new_points = bn(new_points, point_mask)
-            new_points = F.relu(new_points)
+
+            if i < len(self.mlp_convs) - 1:
+                new_points = F.gelu(new_points)
 
         new_points = new_points.transpose(1, 2)  # [B, N_max, D']
 

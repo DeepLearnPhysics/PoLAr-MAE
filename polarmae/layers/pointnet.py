@@ -100,6 +100,7 @@ class PointOrderEncoder(nn.Module):
             TimeEmbedding(dim),
             nn.Linear(dim, dim),
             nn.ReLU(),
+            nn.Linear(dim, dim),
         )
 
     def forward(self, points):

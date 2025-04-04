@@ -8,15 +8,18 @@ from pytorch_lightning.loggers import WandbLogger
 from torchmetrics import Accuracy, Precision, F1Score
 
 from polarmae.eval.segmentation import compute_shape_ious
+from polarmae.eval.visualization import colored_pointcloud_batch
 from polarmae.layers.encoder import TransformerEncoder
 from polarmae.layers.decoder import TransformerDecoder
 from polarmae.layers.feature_upsampling import PointNetFeatureUpsampling
 from polarmae.layers.masking import masked_max, masked_mean
 from polarmae.layers.seg_head import SegmentationHead
-from polarmae.loss import SoftmaxFocalLoss
+from polarmae.loss import SoftmaxFocalLoss, DiceLoss
 from polarmae.models.finetune.base import FinetuneModel
 from polarmae.utils.pylogger import RankedLogger
+from polarmae.layers.token_local_attention import TokenLocalAttention
 from math import sqrt
+import wandb
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -27,10 +30,19 @@ class SemanticSegmentation(FinetuneModel):
         encoder: TransformerEncoder,
         seg_decoder: Optional[TransformerDecoder],
         num_classes: int,
+        class_temps: Optional[List[float]] = None,
         seg_head_fetch_layers: List[int] = [3, 7, 11],
-        seg_head_dim: int = 512,
+        seg_head_dim: int = 384,
         seg_head_dropout: float = 0.5,
+        seg_head_ffn_type: Literal['mlp', 'siren'] = 'mlp',
         condition_global_features: bool = False,
+        apply_encoder_postnorm: bool = True,
+        # New parameters
+        use_token_local_attention: bool = False,
+        token_local_attention_heads: int = 8,
+        token_local_attention_attn_drop_rate: float = 0.0,
+        token_local_attention_drop_rate: float = 0.0,
+        k_nearest: int = 16,
         # LR/optimizer
         learning_rate: float = 1e-3,
         optimizer_adamw_weight_decay: float = 0.05,
@@ -65,19 +77,39 @@ class SemanticSegmentation(FinetuneModel):
         self.encoder_freeze = encoder_freeze
 
         self.condition_global_features = condition_global_features
+        self.class_temps = class_temps
+        if self.class_temps is not None:
+            assert len(self.class_temps) == num_classes, "class_temps must have the same number of elements as num_classes"
+            self.class_temps = nn.Parameter(torch.tensor(self.class_temps, device=self.device), requires_grad=False)
+            log.info(f"🌡️  Using class temps: tau = {self.class_temps} for {num_classes} classes")
 
-        upsampling_dim: int = self.encoder.embed_dim  # type: ignore
-        self.upsampler = PointNetFeatureUpsampling(
-            in_channel=upsampling_dim, mlp=[upsampling_dim, upsampling_dim]
-        )  # type: ignore
+        if use_token_local_attention:
+            self.token_local_attention = TokenLocalAttention(
+                k_nearest=k_nearest,
+                point_dim=4,
+                embed_dim=encoder.transformer.embed_dim,
+                num_heads=token_local_attention_heads,
+                drop_rate=token_local_attention_drop_rate,
+                attn_drop_rate=token_local_attention_attn_drop_rate,
+                qkv_bias=True,
+                use_flash_attn=False, # not good for yuge batch sizes
+            )
+            self.upsampler = None
+        else:
+            self.upsampler = PointNetFeatureUpsampling(
+                in_channel=encoder.transformer.embed_dim,
+                mlp=[encoder.transformer.embed_dim, encoder.transformer.embed_dim],
+            )
 
+        log.info(f'Using {seg_head_ffn_type} seg head ffn type')
         self.seg_head = SegmentationHead(
             self.encoder.embed_dim if (self.seg_decoder is None and self.condition_global_features) else 0,
             0,  # event-wide label embedding -- 0 for polarmae!
-            upsampling_dim,
-            self.hparams.seg_head_dim,
-            self.hparams.seg_head_dropout,
+            encoder.transformer.embed_dim,
+            seg_head_dim,
+            seg_head_dropout,
             num_classes,
+            seg_head_ffn_type,
         )
         if self.seg_decoder is not None:
             log.info(
@@ -90,15 +122,33 @@ class SemanticSegmentation(FinetuneModel):
                 reduction="mean",
                 ignore_index=-1,
             )
-        elif self.hparams.loss_func in ["focal", "fancy"]:
+        elif self.hparams.loss_func == 'focal':
             self.loss_func = SoftmaxFocalLoss(
                 weight=torch.ones(self.hparams.num_classes, device=self.device),
                 reduction="mean",
                 ignore_index=-1,
                 gamma=2,
             )
+        elif self.hparams.loss_func == 'fancy':
+            dice_loss = DiceLoss(
+                smooth=1,
+                ignore_index=-1,
+            )
+            self.focal_loss = SoftmaxFocalLoss(
+                weight=torch.ones(self.hparams.num_classes, device=self.device),
+                reduction="mean",
+                ignore_index=-1,
+                gamma=2,
+            )
+            self.loss_func = lambda logits, labels: dice_loss(logits, labels) + self.focal_loss(logits, labels)
         else:
             raise ValueError(f"Unknown loss function: {self.hparams.loss_func}")
+
+        self.ce_loss = nn.CrossEntropyLoss(
+            weight=torch.ones(self.hparams.num_classes, device=self.device),
+            reduction="mean",
+            ignore_index=-1,
+        )
 
     def setup(self, stage: Optional[str] = None) -> None:
         super().setup(stage)
@@ -120,6 +170,8 @@ class SemanticSegmentation(FinetuneModel):
         self.train_macc = Accuracy('multiclass', **metric_kwargs, average="macro")
         self.train_precision = Precision("multiclass", **metric_kwargs)
         self.train_mprecision = Precision("multiclass", **metric_kwargs, average="macro")
+        self.train_f1_score = F1Score("multiclass", **metric_kwargs)
+        self.train_f1_score_m = F1Score("multiclass", **metric_kwargs, average="macro")
 
         self.val_acc = Accuracy('multiclass', **metric_kwargs)
         self.val_macc = Accuracy('multiclass', **metric_kwargs, average="macro")
@@ -128,11 +180,14 @@ class SemanticSegmentation(FinetuneModel):
 
         self.val_f1_score = F1Score("multiclass", **metric_kwargs)
         self.val_f1_score_m = F1Score("multiclass", **metric_kwargs, average="macro")
+        self.val_f1_score_perclass = F1Score("multiclass", **metric_kwargs, average=None)
+        self.val_acc_perclass = Accuracy('multiclass', **metric_kwargs, average=None)
+        self.val_precision_perclass = Precision("multiclass", **metric_kwargs, average=None)
 
         for logger in self.loggers:
             if isinstance(logger, WandbLogger):
                 self.wandb_logger = logger
-                logger.watch(self)
+                # logger.watch(self)
                 logger.experiment.define_metric("val_acc", summary="last,max")
                 logger.experiment.define_metric("val_macc", summary="last,max")
                 logger.experiment.define_metric("val_ins_miou", summary="last,max")
@@ -141,12 +196,23 @@ class SemanticSegmentation(FinetuneModel):
                 logger.experiment.define_metric("val_mprecision", summary="last,max")
                 logger.experiment.define_metric("val_f1_score", summary="last,max")
                 logger.experiment.define_metric("val_f1_score_m", summary="last,max")
+                for cls_idx in range(self.hparams.num_classes):
+                    cls_name = self.seg_class_to_category.get(cls_idx, f"class_{cls_idx}")
+                    logger.experiment.define_metric(f"val_f1_score_{cls_name}", summary="last,max")
+                    logger.experiment.define_metric(f"val_acc_{cls_name}", summary="last,max")
+                    logger.experiment.define_metric(f"val_precision_{cls_name}", summary="last,max")
 
         """ ------------------------------------------------------------------------ """
         """                                  losses                                  """
         """ ------------------------------------------------------------------------ """
 
         self.loss_func.weight.copy_(self.trainer.datamodule.class_weights)
+        self.ce_loss = nn.CrossEntropyLoss(
+            weight=torch.ones(self.hparams.num_classes, device=self.device),
+            reduction="mean",
+            ignore_index=-1,
+        )
+        self.ce_loss.weight.copy_(self.trainer.datamodule.class_weights)
 
         """ ------------------------------------------------------------------------ """
         """                                  checkpoints                             """
@@ -176,12 +242,14 @@ class SemanticSegmentation(FinetuneModel):
             return_logits: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # run encoder as usual
+
         out = self.encoder.prepare_tokens(points, lengths, ids=labels)
         output = self.encoder(
             out["x"],
             out["pos_embed"],
             out["emb_mask"],
             return_hidden_states=self.seg_decoder is None,
+            final_norm=self.hparams.apply_encoder_postnorm,
         )
         batch_lengths = out['emb_mask'].sum(dim=1)
 
@@ -206,20 +274,36 @@ class SemanticSegmentation(FinetuneModel):
                     [token_features_max, token_features_mean], dim=-1
                 )  # (B, 2*C')
 
-        # upsample token features to point features a la PointNet++
+        # Create point mask
         point_mask = torch.arange(lengths.max(), device=lengths.device).expand(
             len(lengths), -1
         ) < lengths.unsqueeze(-1)
 
-        x, idx = self.upsampler(
-            points[..., :3],
-            out['centers'][:, :, :3],
-            points[..., :3],
-            token_features,
-            lengths,
-            batch_lengths,
-            point_mask,
-        )  # (B, N, 384)
+        if self.hparams.use_token_local_attention:
+            # Use encoder's position embedding for points
+            # point_positions = self.encoder.pos_embed(points)
+            
+            # Apply TokenLocalAttention
+            point_features, _ = self.token_local_attention(
+                points=points,  # Use position embeddings, not raw coordinates
+                point_mask=point_mask,
+                tokens=token_features,
+                tokens_pos=out["pos_embed"],
+                token_mask=out["emb_mask"],
+                token_centers=out["centers"],
+            )
+            x = point_features
+        else:
+            # Upsample token features to point features
+            x, idx = self.upsampler(
+                points[..., :3],
+                out['centers'][:, :, :3],
+                points[..., :3],
+                token_features,
+                lengths,
+                batch_lengths,
+                point_mask,
+            )
 
         if self.seg_decoder is None and self.condition_global_features:
             B, N, C = points.shape
@@ -228,14 +312,19 @@ class SemanticSegmentation(FinetuneModel):
                 [x, global_feature.unsqueeze(-1).expand(-1, -1, N).transpose(1, 2)], dim=-1
             )  # (B, N, 2*C')
 
+
         x = self.seg_head(x.transpose(1, 2), point_mask).transpose(1, 2) # (B, N, num_classes)
 
         if class_slice is not None:
             x = x[..., class_slice] # (B, N, num_classes_to_keep)
 
+        if self.class_temps is not None:
+            x = x / self.class_temps[None, None, :]
+
         return {
             'x': x if return_logits else F.log_softmax(x, dim=-1),
-            'idx': idx,
+            'logits': x if return_logits else None,
+            # 'idx': idx,
             'point_mask': point_mask,
             'id_groups': out['id_groups'],
             'id_pred': torch.max(x, dim=-1).indices,
@@ -247,6 +336,7 @@ class SemanticSegmentation(FinetuneModel):
         lengths: torch.Tensor,
         labels: torch.Tensor,
         class_mask: Optional[slice] = None,
+        return_logits: bool = False,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
 
         out = self.forward(
@@ -254,19 +344,29 @@ class SemanticSegmentation(FinetuneModel):
             lengths,
             labels,
             class_mask,
-            return_logits=self.hparams.loss_func == 'fancy',
+            return_logits=self.hparams.loss_func == 'fancy' or return_logits,
         )
 
         loss = self.loss_func(
             out['x'][out['point_mask']],
             labels.squeeze(-1)[out['point_mask']]
         )
+        with torch.no_grad():
+            ce_loss = self.ce_loss(
+                out['x'][out['point_mask']],
+                labels.squeeze(-1)[out['point_mask']]
+            )
+
+        with torch.no_grad():
+            # get ce loss
+            ce_loss = self.ce_loss(out['x'][out['point_mask']], labels.squeeze(-1)[out['point_mask']])
 
         loss_dict = {
             self.hparams.loss_func: loss,
+            'ce': ce_loss,
         }
         output_dict = { 
-            'logits': out['x'],
+            'logits': out['logits'],
             'pred': out['id_pred'],
             'labels': labels,
         }
@@ -282,8 +382,25 @@ class SemanticSegmentation(FinetuneModel):
         bsz = batch['points'].shape[0]
         self.log_losses(loss_dict, prefix='train_', batch_size=bsz)
         pred, labels = output_dict['pred'], output_dict['labels'].squeeze(-1)
-        for metric in ['macc', 'mprecision', 'acc', 'precision']:
+        for metric in ['macc', 'mprecision', 'acc', 'precision', 'f1_score', 'f1_score_m']:
             self.log(f'train_{metric}', getattr(self, f'train_{metric}')(pred, labels).to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+        ce_loss = loss_dict['ce']
+
+        # Compute per-class metrics during training (optional, can be slower)
+        if self.current_epoch % 5 == 0:  # Compute every 5 epochs to avoid slowing down training
+            f1_perclass = self.train_f1_score_perclass(pred, labels)
+            acc_perclass = self.train_acc_perclass(pred, labels)
+            precision_perclass = self.train_precision_perclass(pred, labels)
+            
+            # Log per-class metrics
+            for cls_idx in range(self.hparams.num_classes):
+                if cls_idx < len(f1_perclass):
+                    cls_name = self.seg_class_to_category.get(cls_idx, f"class_{cls_idx}")
+                    self.log(f'train_f1_score_{cls_name}', f1_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+                    self.log(f'train_acc_{cls_name}', acc_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+                    self.log(f'train_precision_{cls_name}', precision_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+
+        self.log('train_ce', ce_loss.to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
         loss = loss_dict[self.hparams.loss_func]
         return loss
 
@@ -292,13 +409,42 @@ class SemanticSegmentation(FinetuneModel):
             self.val_transformations(batch['points']),
             batch['lengths'],
             batch['semantic_id'],
+            return_logits=True,
         )
+
+        # visualize if batch_idx == 0. let's hope that the dataloader doesn't shuffle the data between epochs
+        if batch_idx == 0:
+            for i in range(3):
+                truth, pred, pred_weighted = colored_pointcloud_batch(output_dict, batch, batch_idx=i)
+
+                truth[..., 3:6] *= 255
+                pred[..., 3:6] *= 255
+                pred_weighted[..., 3:6] *= 255
+                self.logger.experiment.log({
+                    f"preds_{i}": [wandb.Object3D(truth, caption=f"Batch {batch_idx}, Instance {i}"), wandb.Object3D(pred, caption=f"Batch {batch_idx}, Instance {i}"), wandb.Object3D(pred_weighted, caption=f"Batch {batch_idx}, Instance {i}")]
+                })
+
         bsz = batch['points'].shape[0]
         self.val_bsz = bsz
         self.log_losses(loss_dict, prefix='val_', batch_size=bsz)
         pred, labels = output_dict['pred'], output_dict['labels'].squeeze(-1)
         for metric in ['macc', 'mprecision', 'acc', 'precision', 'f1_score', 'f1_score_m']:
             self.log(f'val_{metric}', getattr(self, f'val_{metric}')(pred, labels).to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+        ce_loss = loss_dict['ce']
+        self.log('val_ce', ce_loss.to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+
+        # Compute per-class metrics
+        f1_perclass = self.val_f1_score_perclass(pred, labels)
+        acc_perclass = self.val_acc_perclass(pred, labels)
+        precision_perclass = self.val_precision_perclass(pred, labels)
+        
+        # Log per-class metrics
+        for cls_idx in range(self.hparams.num_classes):
+            if cls_idx < len(f1_perclass):
+                cls_name = self.seg_class_to_category.get(cls_idx, f"class_{cls_idx}")
+                self.log(f'val_f1_score_{cls_name}', f1_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+                self.log(f'val_acc_{cls_name}', acc_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
+                self.log(f'val_precision_{cls_name}', precision_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
 
         ious = compute_shape_ious(
             output_dict['logits'],

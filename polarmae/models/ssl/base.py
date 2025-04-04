@@ -57,17 +57,17 @@ class SSLModel(BaseModel):
             num_labels = datamodule.num_seg_classes
             for i, batch in enumerate(dataloader):
                 data = batch['points'].cuda()
+                data = self.val_transformations(data)
                 lengths = batch['lengths'].cuda()
                 labels_batch = batch['semantic_id'].cuda()
                 with torch.no_grad():
                     out = self.encoder.prepare_tokens(data, lengths, ids=labels_batch)
-                    pos_embed = self.encoder.pos_embed(out['centers'])
-                    x = self.encoder.transformer(out['x'], pos_embed, out['emb_mask']).last_hidden_state.reshape(-1, self.encoder.embed_dim)
+                    x = self.encoder.transformer(out['x'], out['pos_embed'], out['emb_mask'], final_norm=False).last_hidden_state.reshape(-1, self.encoder.embed_dim)
                     semantic_ids = out['id_groups'].reshape(-1, out['id_groups'].shape[2])
 
                     # Vectorized computation to replace the loop
                     N = semantic_ids.shape[0]  # Number of groups
-                    D = semantic_ids.shape[1]  # Number of semantic IDs per group
+                    D = semantic_ids.shape[1]  # Number of ssemantic IDs per group
 
                     group_indices = torch.arange(N, device=semantic_ids.device).unsqueeze(1).expand(-1, D)  # Shape: (N, D)
                     semantic_ids_flat = semantic_ids.reshape(-1)
@@ -91,9 +91,11 @@ class SSLModel(BaseModel):
             y = torch.cat(label_list, dim=0)[:max_tokens]
             return x, y
 
+        log.info('Creating SVM training and validation sets...')
         x_train, y_train = xy(datamodule.svm_train_dataloader())  # type: ignore
         x_val, y_val = xy(datamodule.svm_val_dataloader())  # type: ignore
 
+        log.info('Training ensemble...')
         # PCA down to 128 dimensions
         pca = PCA(n_components=128)
         x_train = pca.fit_transform(x_train)
@@ -110,11 +112,15 @@ class SSLModel(BaseModel):
         svm.fit(x_train, y_train)  # type: ignore
         train_acc: float = svm.score(x_train, y_train)  # type: ignore
         val_acc: float = svm.score(x_val, y_val)  # type: ignore
-        train_report = classification_report(y_train, svm.predict(x_train), output_dict=True)
-        val_report = classification_report(y_val, svm.predict(x_val), output_dict=True)
+        train_report = classification_report(y_train, svm.predict(x_train), output_dict=True, zero_division=torch.nan)
+        val_report = classification_report(y_val, svm.predict(x_val), output_dict=True, zero_division=torch.nan)
 
         train_class_scores = {datamodule.seg_class_to_category[int(label)]: metrics['f1-score'] for label, metrics in train_report.items() if label.isdigit()}
         val_class_scores = {datamodule.seg_class_to_category[int(label)]: metrics['f1-score'] for label, metrics in val_report.items() if label.isdigit()}
+
+        train_class_scores['macro'] = train_report['macro avg']['f1-score']
+        val_class_scores['macro'] = val_report['macro avg']['f1-score']
+
         return train_acc, val_acc, train_class_scores, val_class_scores
 
     def on_validation_epoch_end(self) -> None:
@@ -122,11 +128,10 @@ class SSLModel(BaseModel):
         assert not torch.is_grad_enabled()
 
         svm_train_acc, svm_val_acc, train_class_scores, val_class_scores = self.validate()
-        dataset_name = "larnet" # for now :) TODO! REMOVE
         batch_size = self.trainer.datamodule.hparams.svm_batch_size
-        self.log(f"svm_train_acc_{dataset_name}", svm_train_acc, sync_dist=True, batch_size=batch_size)
-        self.log(f"svm_val_acc_{dataset_name}", svm_val_acc, sync_dist=True, batch_size=batch_size)
+        self.log("svm_train_acc", svm_train_acc, sync_dist=True, batch_size=batch_size)
+        self.log("svm_val_acc", svm_val_acc, sync_dist=True, batch_size=batch_size)
         for label, score in train_class_scores.items():
-            self.log(f"svm_train_class_score_{dataset_name}_{label}", score, sync_dist=True, batch_size=batch_size)
+            self.log(f"svm_train_class_f1_{label}", score, sync_dist=True, batch_size=batch_size)
         for label, score in val_class_scores.items():
-            self.log(f"svm_val_class_score_{dataset_name}_{label}", score, sync_dist=True, batch_size=batch_size)
+            self.log(f"svm_val_class_f1_{label}", score, sync_dist=True, batch_size=batch_size)
