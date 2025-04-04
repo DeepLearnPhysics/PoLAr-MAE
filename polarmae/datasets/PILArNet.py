@@ -263,6 +263,8 @@ class PILArNetDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             persistent_workers=self.persistent_workers,
+            shuffle=False,
+            drop_last=False,
             collate_fn=PILArNet.collate_fn,
             worker_init_fn=PILArNet.init_worker_fn,
         )
