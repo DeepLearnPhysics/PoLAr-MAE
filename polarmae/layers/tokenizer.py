@@ -33,20 +33,33 @@ class PointcloudTokenizer(nn.Module):
         use_relative_features: bool = False,
         normalize_group_centers: bool = False,
         masking_ratio: float = 0.6,
-        masking_type: Literal['rand'] = 'rand'
+        masking_type: Literal['rand'] = 'rand',
+        use_fps_seed: bool = True,
+        rescale_by_group_radius: bool | float = True,
     ) -> None:
         super().__init__()
+
+        def try_type(x, _type):
+            if isinstance(x, bool):
+                return x
+            elif x is None:
+                return None
+            else:
+                return _type(x)
+
         self.token_dim = token_dim
         self.grouping = PointcloudGrouping(
-            num_groups=num_init_groups,
-            group_max_points=group_max_points,
-            group_radius=group_radius,
-            group_upscale_points=group_upscale_points,
-            overlap_factor=overlap_factor,
-            context_length=context_length,
+            num_groups=try_type(num_init_groups, int),
+            group_max_points=try_type(group_max_points, int),
+            group_radius=try_type(group_radius, float),
+            group_upscale_points=try_type(group_upscale_points, int),
+            overlap_factor=try_type(overlap_factor, float),
+            context_length=try_type(context_length, int),
             reduction_method=reduction_method,
             use_relative_features=use_relative_features,
             normalize_group_centers=normalize_group_centers,
+            use_fps_seed=use_fps_seed,
+            rescale_by_group_radius=try_type(rescale_by_group_radius, float),
         )
 
         self.embedding = MaskedMiniPointNet(num_channels, token_dim)
@@ -100,32 +113,36 @@ class PointcloudTokenizer(nn.Module):
                 augmented_groups = large_gather(augmented_groups, unmasked_indices)
 
         # just embed nonzero visible groups (no need to encode the others !)
-        flattened_tokens = self.embedding(
-            groups[emb_mask], point_mask[emb_mask].unsqueeze(1)
-        )
-        tokens = torch.zeros(
-            groups.shape[0],
-            groups.shape[1],
-            self.token_dim,
-            device=flattened_tokens.device,
-            dtype=flattened_tokens.dtype,
-        )
-        tokens[emb_mask] = flattened_tokens
+        with torch.amp.autocast_mode.autocast(device_type=groups.device.type, dtype=torch.float32):
+            flattened_tokens = self.embedding(
+                groups[emb_mask], point_mask[emb_mask].unsqueeze(1)
+            )
+
+            tokens = torch.zeros(
+                groups.shape[0],
+                groups.shape[1],
+                self.token_dim,
+                device=flattened_tokens.device,
+                dtype=flattened_tokens.dtype,
+            )
+            tokens[emb_mask] = flattened_tokens
+
 
         # create ANOTHER set of visible tokens -- augmented by some transformation
         augmented_tokens = None
         if augmented_groups is not None:
-            flattened_augmented_tokens = self.embedding(
-                augmented_groups[emb_mask], point_mask[emb_mask].unsqueeze(1)
-            )
-            augmented_tokens = torch.zeros(
-                augmented_groups.shape[0],
-                augmented_groups.shape[1],
-                self.token_dim,
-                device=flattened_augmented_tokens.device,
-                dtype=flattened_augmented_tokens.dtype,
-            )
-            augmented_tokens[emb_mask] = flattened_augmented_tokens
+            with torch.amp.autocast(device_type=augmented_groups.device.type, dtype=torch.float32): 
+                flattened_augmented_tokens = self.embedding(
+                    augmented_groups[emb_mask], point_mask[emb_mask].unsqueeze(1)
+                )
+                augmented_tokens = torch.zeros(
+                    augmented_groups.shape[0],
+                    augmented_groups.shape[1],
+                    self.token_dim,
+                    device=flattened_augmented_tokens.device,
+                    dtype=flattened_augmented_tokens.dtype,
+                )
+                augmented_tokens[emb_mask] = flattened_augmented_tokens
 
 
         grouping_out["tokens"] = tokens
