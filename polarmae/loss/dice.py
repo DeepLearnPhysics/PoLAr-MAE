@@ -2,12 +2,23 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from torch.nn.modules.loss import _WeightedLoss
+from typing import Optional
+from torch import Tensor
 
 __all__ = ['DiceLoss']
 
-class DiceLoss(nn.Module):
-    def __init__(self, smooth=1, ignore_index=None):
-        super(DiceLoss, self).__init__()
+class DiceLoss(_WeightedLoss):
+    def __init__(
+            self,
+            weight: Optional[Tensor] = None,
+            size_average: Optional[bool] = None,
+            reduce: Optional[bool] = None,
+            reduction: str = "mean",
+            smooth=1,
+            ignore_index=None,
+            ):
+        super().__init__(weight, size_average, reduce, reduction)
         self.smooth = smooth
         self.ignore_index = ignore_index
 
@@ -60,9 +71,33 @@ class DiceLoss(nn.Module):
         dice_coeff = (2.0 * intersection + self.smooth) / (
             inputs_sum + targets_sum + self.smooth
         )  # Shape: (N, C)
-        dice_loss = 1 - dice_coeff  # Shape: (N, C)
+        loss = 1 - dice_coeff  # Shape: (N, C)
 
-        # Mean over classes and batch
-        dice_loss = dice_loss.mean()
+        # Apply class weights if provided
+        if self.weight is not None:
+            # Ensure weight tensor has the right shape
+            if self.weight.dim() == 1:
+                # Expand weight to match batch dimension
+                weight = self.weight.view(1, -1)  # Shape: (1, C)
+                weight = weight.expand(loss.size(0), -1)  # Shape: (N, C)
+            else:
+                weight = self.weight
+            
+            # Apply weights to each class
+            loss = loss * weight
+            
+            # Normalize by sum of weights if using mean reduction
+            if self.reduction == "mean":
+                loss = loss.sum() / weight.sum()
+                return loss
 
-        return dice_loss
+
+        if self.reduction == "mean":
+            loss = loss.mean()
+        elif self.reduction == "sum":
+            loss = loss.sum()
+        elif self.reduction == "none":
+            pass
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}")
+        return loss
