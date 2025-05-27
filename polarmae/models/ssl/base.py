@@ -91,11 +91,9 @@ class SSLModel(BaseModel):
             y = torch.cat(label_list, dim=0)[:max_tokens]
             return x, y
 
-        log.info('Creating SVM training and validation sets...')
         x_train, y_train = xy(datamodule.svm_train_dataloader())  # type: ignore
         x_val, y_val = xy(datamodule.svm_val_dataloader())  # type: ignore
 
-        log.info('Training ensemble...')
         # PCA down to 128 dimensions
         pca = PCA(n_components=128)
         x_train = pca.fit_transform(x_train)
