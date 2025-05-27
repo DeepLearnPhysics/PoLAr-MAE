@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from polarmae.layers.encoder import TransformerEncoder, TransformerOutput
 from polarmae.utils import transforms
 from polarmae.utils.checkpoint import extract_model_checkpoint
-from polarmae.utils.scheduler import LinearWarmupCosineAnnealingLR
+from polarmae.utils.scheduler import LinearWarmupCosineAnnealingLR, LinearWarmupLR
 from polarmae.utils.pylogger import RankedLogger
 
 log = RankedLogger(__name__, rank_zero_only=True)
@@ -76,28 +76,52 @@ class BaseModel(pl.LightningModule):
     def configure_optimizers(self):
         assert self.trainer is not None
 
-        opt = torch.optim.AdamW(
-            params=self.parameters(),
-            lr=self.hparams.learning_rate,  # type: ignore
-            weight_decay=self.hparams.optimizer_adamw_weight_decay,  # type: ignore
-        )
+        try:
+            if 'deepspeed' not in self.trainer.strategy.__class__.__name__.lower():
+                raise ImportError
+            import deepspeed
+            opt = deepspeed.ops.adam.DeepSpeedCPUAdam(
+                self.parameters(),
+                lr=self.hparams.learning_rate,  # type: ignore
+                weight_decay=self.hparams.optimizer_adamw_weight_decay,  # type: ignore
+            )
+            log.info("Using FusedAdamW optimizer")
+        except ImportError:
+            opt = torch.optim.AdamW(
+                self.parameters(),
+                lr=self.hparams.learning_rate,  # type: ignore
+                weight_decay=self.hparams.optimizer_adamw_weight_decay,  # type: ignore
+            )
+            log.info("Using AdamW optimizer")
+
 
         warmup_epochs = self.hparams.lr_scheduler_linear_warmup_epochs
-        max_epochs = self.trainer.max_epochs
-        if self.hparams.lr_scheduler_stepping == 'step': # iters probably given
-            steps_per_epoch = self.trainer.num_training_batches
-            max_epochs = self.trainer.max_steps if self.trainer.max_steps is not None else self.trainer.max_epochs * steps_per_epoch
+        if self.hparams.lr_scheduler_type == 'cosine':
+            log.info("Using LinearWarmupCosineAnnealingLR")
+            max_epochs = self.trainer.max_epochs
+            if self.hparams.lr_scheduler_stepping == 'step': # iters probably given
+                steps_per_epoch = self.trainer.num_training_batches
+                max_epochs = self.trainer.max_steps if self.trainer.max_steps is not None else self.trainer.max_epochs * steps_per_epoch
 
-        for name, val in zip(['max_iters', 'warmup_iters'], [max_epochs, warmup_epochs]):
-            log.info(f'{name}: {val}')
+                for name, val in zip(['max_iters', 'warmup_iters'], [max_epochs, warmup_epochs]):
+                    log.info(f'{name}: {val}')
 
-        sched = LinearWarmupCosineAnnealingLR(
-            opt,
-            warmup_epochs=warmup_epochs, # iters if step, epochs otherwise
-            max_epochs=max_epochs,       # iters if step, epochs otherwise
-            warmup_start_lr=self.hparams.lr_scheduler_linear_warmup_start_lr,  # type: ignore
-            eta_min=self.hparams.lr_scheduler_cosine_eta_min,  # type: ignore
-        )
+                sched = LinearWarmupCosineAnnealingLR(
+                    opt,
+                    warmup_epochs=warmup_epochs, # iters if step, epochs otherwise
+                    max_epochs=max_epochs,       # iters if step, epochs otherwise
+                    warmup_start_lr=self.hparams.lr_scheduler_linear_warmup_start_lr,  # type: ignore
+                    eta_min=self.hparams.lr_scheduler_cosine_eta_min,  # type: ignore
+                )
+        elif self.hparams.lr_scheduler_type == 'linear':
+            log.info("Using LinearWarmupLR")
+            sched = LinearWarmupLR(
+                opt,
+                warmup_epochs=warmup_epochs,
+                warmup_start_lr=self.hparams.lr_scheduler_linear_warmup_start_lr,  # type: ignore
+            )
+        else:
+            raise ValueError(f"Invalid scheduler type: {self.hparams.lr_scheduler_type}")
 
         if self.hparams.lr_scheduler_stepping == 'step':
             sched = {
