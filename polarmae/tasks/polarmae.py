@@ -1,11 +1,12 @@
-import polarmae.utils.pytorch_monkey_patch
 import torch
 from omegaconf import OmegaConf
 import pytorch_lightning
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.cli import LightningCLI
+import torch
 import os
 
+# torch.set_float32_matmul_precision("high")
 getenv = lambda x: os.environ[x]
 OmegaConf.register_new_resolver("eval", eval)
 OmegaConf.register_new_resolver("getenv", getenv)
@@ -21,12 +22,12 @@ if __name__ == "__main__":
             "accelerator": "gpu",
             "devices": 4,
             "precision": "32",
-            "max_epochs": 800,
+            "max_epochs": -1,
             "log_every_n_steps": 10,
             "check_val_every_n_epoch": 200,
             "callbacks": [
                 LearningRateMonitor(),
-                ModelCheckpoint(save_on_train_epoch_end=True),
+                ModelCheckpoint(every_n_train_steps=10000, save_last=True),
                 ModelCheckpoint(
                     filename="{epoch}-{step}-{val:.3f}",
                     monitor="loss/val",
@@ -35,6 +36,11 @@ if __name__ == "__main__":
                     monitor="svm_val_acc",
                     mode="max",
                     filename="{epoch}-{step}-{svm_val_acc:.4f}",
+                ),
+                ModelCheckpoint(
+                    monitor="svm_val_class_f1_macro",
+                    mode="max",
+                    filename="{epoch}-{step}-{svm_val_class_f1_macro:.4f}",
                 ),
                 # ModelCheckpoint(
                 #     save_top_k=4,
