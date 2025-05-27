@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from polarmae.layers.grouping import masked_gather
-from polarmae.layers.masking import MaskedBatchNorm1d
+from polarmae.layers.masking import MaskedBatchNorm1d, MaskedLayerNorm
 from pytorch3d.ops import knn_gather, knn_points
 
 __all__ = ["PointNetFeatureUpsampling"]
@@ -73,6 +73,10 @@ class PointNetFeatureUpsampling(nn.Module):
                 new_points = torch.cat(
                     [points1, interpolated_points], dim=-1
                 )  # [B, N_max, D1 + D2]
+        elif points1 is not None:
+            new_points = torch.cat(
+                [points1, interpolated_points], dim=-1
+            )  # [B, N_max, D1 + D2]
         else:
             new_points = interpolated_points  # [B, N_max, D2]
 
