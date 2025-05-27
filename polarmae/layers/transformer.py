@@ -6,6 +6,9 @@ import torch.nn as nn
 from polarmae.layers.attention import prepare_attn_mask
 from polarmae.layers.block import Block
 from polarmae.layers.masking import MaskedDropPath, MaskedLayerNorm
+from polarmae.utils.pylogger import RankedLogger
+
+log = RankedLogger(__name__, rank_zero_only=True)
 
 __all__ = [
     'Transformer',
@@ -43,6 +46,10 @@ class Transformer(nn.Module):
         use_kv=False,
         use_flash_attn=True,
         norm_layer=MaskedLayerNorm,
+        prefix_tuning=False,
+        prefix_dim=128,
+        prefix_hidden_dim=128,
+        prefix_num_tokens=0,
         # deprecated
         use_flash_self_attn=False,
     ):
@@ -81,6 +88,25 @@ class Transformer(nn.Module):
 
         self.add_pos_at_every_layer = add_pos_at_every_layer
 
+        # prefix-tuning
+        self.prefix_tuning = prefix_tuning
+        self.prefix_num_tokens = prefix_num_tokens
+        if prefix_tuning:
+            log.info("🔥  Initializing prefix tokens.")
+            # Initialize a small parameter matrix (1, N, k)
+            self.p_theta_prime = nn.Parameter(torch.zeros(1, prefix_num_tokens, prefix_dim))
+            nn.init.trunc_normal_(self.p_theta_prime, std=0.02)
+
+            # MLP to transform from (1, N, k) to (1, N, L*2*C)
+            # Where L is the number of layers, 2 is for K and V, and C is embed_dim
+            self.prefix_mlp = nn.Sequential(
+                nn.Linear(prefix_dim, prefix_hidden_dim),
+                nn.GELU(),
+                nn.Linear(prefix_hidden_dim, prefix_hidden_dim),
+                nn.GELU(),
+                nn.Linear(prefix_hidden_dim, depth * embed_dim * 2),
+            )
+
         self.apply(self._init_weights)
 
     def _zero_drop_path(self):
@@ -96,6 +122,43 @@ class Transformer(nn.Module):
             nn.init.trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+
+    def get_prefix_tokens(self):
+        """
+        Process prefix tokens through MLP and reshape for use in attention.
+        
+        Returns:
+            Tensor of shape (depth, 2, B, prefix_num_tokens, embed_dim) where the second
+            dimension represents K and V prefix tokens for each layer
+        """
+        if not self.prefix_tuning or self.prefix_num_tokens == 0:
+            return None
+            
+        # Run through MLP
+        batch_size = 1  # We use the same prefix for all batch items
+        prefix_tokens = self.p_theta_prime  # (1, N, prefix_dim)
+        
+        # Transform to (1, N, L*2*C)
+        prefix_tokens = self.prefix_mlp(prefix_tokens)
+        
+        # Reshape to (depth, 2, 1, prefix_num_tokens, embed_dim)
+        prefix_tokens = prefix_tokens.view(
+            batch_size, 
+            self.prefix_num_tokens, 
+            len(self.blocks), 
+            2 * self.embed_dim
+        ).permute(2, 0, 1, 3)
+        
+        # Reshape to split K and V dimensions
+        prefix_tokens = prefix_tokens.reshape(
+            len(self.blocks),    # depth
+            batch_size,          # B
+            self.prefix_num_tokens, 
+            2,                   # K and V
+            self.embed_dim
+        ).permute(0, 3, 1, 2, 4)  # (depth, 2, B, prefix_num_tokens, embed_dim)
+        
+        return prefix_tokens
 
     def forward(
         self,
@@ -115,7 +178,14 @@ class Transformer(nn.Module):
         Q from x, K/V from cat[x,y].
         If memory is None, self-attention is performed.
         """
-        qkv_attn_mask = prepare_attn_mask(q, q_mask, kv, kv_mask)
+        # Get prefix tokens if using prefix tuning (for self-attention only)
+        prefix_tokens = None
+        if self.prefix_tuning and kv is None:  # Only for self-attention
+            prefix_tokens = self.get_prefix_tokens()
+            
+        # Calculate padding for attention masks if using prefix tuning
+        pad = self.prefix_num_tokens if self.prefix_tuning and kv is None else 0
+        qkv_attn_mask = prepare_attn_mask(q, q_mask, kv, kv_mask, pad=pad)
 
         hidden_states = [] if return_hidden_states else None
         attentions = [] if return_attentions else None
@@ -125,15 +195,22 @@ class Transformer(nn.Module):
         if not self.add_pos_at_every_layer:
             q = q + pos_q
 
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
             if self.add_pos_at_every_layer:
                 q = q + pos_q
+                
+            # Pass appropriate prefix tokens for this layer if doing self-attention with prefix tuning
+            current_prefix = None
+            if prefix_tokens is not None:
+                current_prefix = prefix_tokens[i]  # Get the prefix tokens for this layer
+                
             q, attn = block(
                 q,
                 q_mask,
                 qkv_attn_mask,
                 kv,
                 kv_mask,
+                prefix_k_v=current_prefix,
             )
             if return_hidden_states:
                 assert hidden_states is not None

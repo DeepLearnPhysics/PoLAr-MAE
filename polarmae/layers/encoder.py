@@ -9,6 +9,9 @@ from polarmae.layers.rpb import RelativePositionalBias3D
 from polarmae.layers.grouping import fill_empty_indices
 from polarmae.layers.tokenizer import make_tokenizer
 from polarmae.layers.transformer import TransformerOutput, make_transformer
+from polarmae.utils.pylogger import RankedLogger
+
+log = RankedLogger(__name__, rank_zero_only=True)
 
 class TransformerEncoder(nn.Module):
     def __init__(
@@ -47,7 +50,6 @@ class TransformerEncoder(nn.Module):
             embed_dim=self.embed_dim,
             use_relative_features=tokenizer_kwargs.get('use_relative_features', False),
         )
-
         self.relative_position_bias = None
         if apply_relative_position_bias:
             normalized_voxel_size = self.tokenizer.grouping.group_radius
@@ -61,6 +63,16 @@ class TransformerEncoder(nn.Module):
     def flash_attention(self, use_flash: bool = True):
         for block in self.transformer.blocks:
             block.attn.use_flash_attn = use_flash
+
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
+        # unfreeze the prefix tokens if prefix tuning is enabled
+        if self.transformer.prefix_tuning:
+            log.info("🔥  Unfreezing prefix tokens.")
+            self.transformer.p_theta_prime.requires_grad = True
+            for param in self.transformer.prefix_mlp.parameters():
+                param.requires_grad = True
 
     def prepare_tokens_with_masks(
             self,
