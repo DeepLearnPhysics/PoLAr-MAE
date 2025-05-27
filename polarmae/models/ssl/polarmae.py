@@ -22,6 +22,7 @@ class PoLArMAE(SSLModel):
         learning_rate: float = 1e-3,
         mae_prediction: Literal['full', 'pos'] = 'full',
         optimizer_adamw_weight_decay: float = 0.05,
+        lr_scheduler_type: Literal['cosine', 'linear'] = 'cosine',
         lr_scheduler_linear_warmup_epochs: int = 80,
         lr_scheduler_linear_warmup_start_lr: float = 1e-6,
         lr_scheduler_cosine_eta_min: float = 1e-6,
@@ -75,7 +76,9 @@ class PoLArMAE(SSLModel):
         self.equivariant_patch_encoder = MaskedMiniPointNet(
             channels=3,
             feature_dim=self.embed_dim // 4,
-            equivariant=True
+            equivariant=True,
+            hidden_dim1=64,
+            hidden_dim2=64,
         )
 
         self.energy_decoder = nn.Conv1d(
@@ -104,27 +107,27 @@ class PoLArMAE(SSLModel):
             kv_mask=out['unmasked_mask'],
         ).last_hidden_state
         masked_output = decoder_out[out['masked_mask']]
-
-        # full patch reconstruction task
-        upscaled = self.increase_dim(masked_output.transpose(0, 1)).transpose(0, 1)
-        upscaled = upscaled.reshape(upscaled.shape[0], -1, self.mae_channels)
-
         masked_groups = out['masked_groups'][out['masked_mask']]
         flattened_masked_point_mask = out['masked_groups_point_mask'][out['masked_mask']]
         point_lengths = flattened_masked_point_mask.sum(-1)
 
-        chamfer_loss, _ = chamfer_distance(
-            upscaled.float(),
-            masked_groups.float()[..., :self.mae_channels],
-            x_lengths=point_lengths,
-            y_lengths=point_lengths,
-        )
+        with torch.amp.autocast(device_type=masked_output.device.type, dtype=torch.float32):
+            # full patch reconstruction task
+            upscaled = self.increase_dim(masked_output.transpose(0, 1)).transpose(0, 1)
+            upscaled = upscaled.reshape(upscaled.shape[0], -1, self.mae_channels)
+            chamfer_loss, _ = chamfer_distance(
+                upscaled.float(),
+                masked_groups[..., :self.mae_channels].float(),
+                x_lengths=point_lengths,
+                y_lengths=point_lengths,
+            )
 
         # energy infilling task
         masked_point_mask = flattened_masked_point_mask.unsqueeze(1) # (B*G, 1, S)
-        equivariant_patch_encoder_output = self.equivariant_patch_encoder(
-            masked_groups[..., :3], masked_point_mask
-        )
+        with torch.amp.autocast(device_type=masked_output.device.type, dtype=torch.float32):
+            equivariant_patch_encoder_output = self.equivariant_patch_encoder(
+                masked_groups[..., :3], masked_point_mask
+            )
         # concatenate output with encoded masked tokens
         decoder_input = torch.cat(
             [equivariant_patch_encoder_output, masked_output], dim=1
@@ -135,21 +138,30 @@ class PoLArMAE(SSLModel):
             decoder_input.transpose(0, 1)
         ).transpose(0, 1)
         
-        energy_loss = F.mse_loss(
-            decoded_energy[masked_point_mask.squeeze(1)], masked_groups[masked_point_mask.squeeze(1)][..., -1]
+        energy_loss = F.huber_loss(
+            decoded_energy[masked_point_mask.squeeze(1)].float(), masked_groups[masked_point_mask.squeeze(1)][..., -1].float(),
+            delta=0.2
         )
 
         self.tokens_processed += out['emb_mask'].sum()
-        return {'chamfer': chamfer_loss, 'energy': energy_loss}
+
+        info_dict = {}
+        # get average number of points
+        info_dict['mean_points'] = lengths.float().mean()
+        info_dict['mean_groups'] = out['emb_mask'].sum(-1).float().mean()
+        return {'chamfer': chamfer_loss, 'energy': energy_loss}, info_dict
     
     def training_step(self, batch, batch_idx: int) -> torch.Tensor:
         points = batch['points']
         lengths = batch['lengths']
         points = self.train_transformations(points)
-        loss_dict = self.compute_loss(points, lengths)
-        self.log_losses(loss_dict, prefix='loss/train_')
+        loss_dict, info_dict = self.compute_loss(points, lengths)
+        batch_size = points.shape[0]
+        self.log_losses(loss_dict, prefix='loss/train_', batch_size=batch_size)
         loss = sum(loss_dict[k] * self.hparams.loss_weights.get(k, 1.0) for k in loss_dict.keys())
-        self.log('loss/train', loss, sync_dist=True, on_epoch=True, on_step=True, prog_bar=True)
+        self.log('loss/train', loss, sync_dist=True, on_epoch=True, on_step=True, prog_bar=True, batch_size=batch_size)
+        for k, v in info_dict.items():
+            self.log(f'info/train_{k}', v, sync_dist=True, on_epoch=True, on_step=True, batch_size=batch_size)
 
         self.log(
             "tokens_processed",
@@ -157,6 +169,7 @@ class PoLArMAE(SSLModel):
             sync_dist=True,
             on_epoch=True,
             on_step=True,
+            batch_size=batch_size,
         )
         return loss
     
@@ -164,15 +177,19 @@ class PoLArMAE(SSLModel):
         points = batch['points']
         lengths = batch['lengths']
         points = self.val_transformations(points)
-        loss_dict = self.compute_loss(points, lengths)
-        self.log_losses(loss_dict, prefix='loss/val_')
+        loss_dict, info_dict = self.compute_loss(points, lengths)
+        self.log_losses(loss_dict, prefix='loss/val_', batch_size=points.shape[0])
         loss = sum(loss_dict[k] * self.hparams.loss_weights.get(k, 1.0) for k in loss_dict.keys())
-        self.log('loss/val', loss, sync_dist=True, on_epoch=True, on_step=False)
+        batch_size = points.shape[0]
+        self.log('loss/val', loss, sync_dist=True, on_epoch=True, on_step=False, batch_size=batch_size)
+        for k, v in info_dict.items():
+            self.log(f'info/val_{k}', v, sync_dist=True, on_epoch=True, on_step=False, batch_size=batch_size)
         self.log(
             "tokens_processed",
             float(self.tokens_processed),
             sync_dist=True,
             on_epoch=True,
             on_step=True,
+            batch_size=batch_size,
         )
         return loss
