@@ -302,7 +302,7 @@ class PointcloudGrouping(nn.Module):
         reduction_method: Literal["energy", "fps"] = "energy",
         use_relative_features: bool = False,
         normalize_group_centers: bool = False,
-        rescale_by_group_radius: bool = True,
+        rescale_by_group_radius: bool | float = True,
         use_fps_seed: bool = True,
     ):
         super().__init__()
@@ -316,8 +316,13 @@ class PointcloudGrouping(nn.Module):
         self.group_upscale_points = group_upscale_points
         self.use_relative_features = use_relative_features
         self.normalize_group_centers = normalize_group_centers
-        self.rescale_by_group_radius = rescale_by_group_radius
-        self.use_fps_seed = self.overlap_factor is None
+
+        if isinstance(rescale_by_group_radius, bool):
+            self.rescale_by_group_radius = group_radius
+        else:
+            self.rescale_by_group_radius = rescale_by_group_radius
+
+        self.use_fps_seed = use_fps_seed
         if not self.use_fps_seed:
             log.info(
                 f"Using CNMS for grouping. Using `num_groups` as the K in the ball query ({self.num_groups})! Make sure it's not too large!"
@@ -364,8 +369,8 @@ class PointcloudGrouping(nn.Module):
                 K=self.num_groups,
                 lengths=possible_lengths,
             )  # (B, G, 3), (B,)
-            group_centers = group_centers[:,:self.context_length]
             lengths1 = lengths1.clamp_max(self.context_length)
+            group_centers = group_centers[:, : self.context_length]
 
             if augmented_points is not None:
                 augmented_group_centers = augmented_possible_centers.gather(
@@ -444,8 +449,7 @@ class PointcloudGrouping(nn.Module):
 
         # Create point mask with shape (B, G, K)
         point_lengths = (~idx.eq(-1)).sum(2)  # (B, G)
-        groups = masked_gather(points,
-                               fill_empty_indices(idx))  # (B, G, K, C)
+        groups = masked_gather(points, fill_empty_indices(idx))  # (B, G, K, C)
 
         augmented_groups = None
         if augmented_points is not None:
@@ -496,11 +500,11 @@ class PointcloudGrouping(nn.Module):
 
         if self.group_radius is not None and self.rescale_by_group_radius:
             groups[:, :, :, :3] = (
-                groups[:, :, :, :3] / self.group_radius
+                groups[:, :, :, :3] / self.rescale_by_group_radius
             )  # proposed by PointNeXT to make relative coordinates less small
             if augmented_groups is not None:
                 augmented_groups[:, :, :, :3] = (
-                    augmented_groups[:, :, :, :3] / self.group_radius
+                    augmented_groups[:, :, :, :3] / self.rescale_by_group_radius
                 )  # proposed by PointNeXT to make relative coordinates less small
 
         # zero out groups/tokens that are padded. not necessary but helpful for debugging
