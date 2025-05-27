@@ -8,6 +8,8 @@ from pytorch_lightning.cli import LightningCLI
 OmegaConf.register_new_resolver("eval", eval)
 
 import torch
+torch.set_float32_matmul_precision("high")
+
 from polarmae.datasets import PILArNetDataModule
 from polarmae.models.finetune import SemanticSegmentation
 

@@ -6,7 +6,7 @@ from pytorch_lightning.cli import LightningCLI
 import torch
 import os
 
-# torch.set_float32_matmul_precision("high")
+torch.set_float32_matmul_precision("high")
 getenv = lambda x: os.environ[x]
 OmegaConf.register_new_resolver("eval", eval)
 OmegaConf.register_new_resolver("getenv", getenv)
