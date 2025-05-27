@@ -11,26 +11,28 @@ class MaskedMiniPointNet(nn.Module):
         self,
         channels: int,
         feature_dim: int,
+        hidden_dim1: int = 128,
+        hidden_dim2: int = 256,
         equivariant: bool = False,
     ):
         super().__init__()
         self.first_conv = nn.Sequential(
-            nn.Conv1d(channels, 128, 1, bias=False),
-            MaskedBatchNorm1d(128),
+            nn.Conv1d(channels, hidden_dim1, 1, bias=False),
+            MaskedBatchNorm1d(hidden_dim1),
             nn.ReLU(inplace=True),
-            nn.Conv1d(128, 256, 1),
+            nn.Conv1d(hidden_dim1, hidden_dim2, 1),
         )
 
         self.second_conv = nn.Sequential(
-            nn.Conv1d(512, 512, 1, bias=False),
-            MaskedBatchNorm1d(512),
+            nn.Conv1d(hidden_dim2 * 2, hidden_dim2 * 2, 1, bias=False),
+            MaskedBatchNorm1d(hidden_dim2 * 2),
             nn.ReLU(inplace=True),
-            nn.Conv1d(512, feature_dim, 1),
+            nn.Conv1d(hidden_dim2 * 2, feature_dim, 1),
         )
 
         self.equivariant = equivariant
         if self.equivariant:
-            self.position_encoder = PointOrderEncoder(256)
+            self.position_encoder = PointOrderEncoder(hidden_dim2)
 
     def forward(self, points, mask) -> torch.Tensor:
         # points: (B, N, C)
