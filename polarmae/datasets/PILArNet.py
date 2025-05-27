@@ -24,6 +24,8 @@ class PILArNet(Dataset):
         min_points: int = 1024,
         return_semantic_id: bool = True,
         return_cluster_id: bool = True,
+        return_interaction_id: bool = True,
+        return_group_id: bool = True,
         return_endpoints: bool = False # not used currently
     ):
         self.data_path = data_path
@@ -36,6 +38,8 @@ class PILArNet(Dataset):
         self.min_points = min_points
         self.return_semantic_id = return_semantic_id
         self.return_cluster_id = return_cluster_id
+        self.return_interaction_id = return_interaction_id
+        self.return_group_id = return_group_id
 
         self.maxlen = maxlen
         self.initted = False
@@ -99,17 +103,18 @@ class PILArNet(Dataset):
 
         # load the point cloud
         data = h5_file["point"][idx].reshape(-1, 8)[:, [0,1,2,3,5]] # (x,y,z,e,t)
-        cluster_size, semantic_id = h5_file["cluster"][idx].reshape(-1, 5)[:, [0, -1]].T
+        cluster_size, semantic_id, interaction_id, group_id = h5_file["cluster"][idx].reshape(-1, 5)[:, [0, -1, -2, -3]].T
 
         # remove low energy scatters (always first particle)
         if self.remove_low_energy_scatters:
             data = data[cluster_size[0] :]
-            semantic_id, cluster_size = semantic_id[1:], cluster_size[1:]
+            semantic_id, cluster_size, interaction_id, group_id = semantic_id[1:], cluster_size[1:], interaction_id[1:], group_id[1:]
 
         # compute semantic and instance (cluster) ids for each point
         data_semantic_id = np.repeat(semantic_id, cluster_size)
         cluster_id = np.repeat(np.arange(len(cluster_size)), cluster_size)
-
+        data_interaction_id = np.repeat(interaction_id, cluster_size)
+        data_group_id = np.repeat(group_id, cluster_size)
 
         # log transform energy to [-1,1]
         data, threshold_mask = self.transform_energy(data)
@@ -118,16 +123,22 @@ class PILArNet(Dataset):
         if threshold_mask is not None:
             data = data[threshold_mask]
             data_semantic_id = data_semantic_id[threshold_mask]
+            data_interaction_id = data_interaction_id[threshold_mask]
+            data_group_id = data_group_id[threshold_mask]
             cluster_id = cluster_id[threshold_mask]
 
         data = torch.from_numpy(data[:,:4]).float()
         data_semantic_id = torch.from_numpy(data_semantic_id).unsqueeze(1).long()
         cluster_id = torch.from_numpy(cluster_id).unsqueeze(1).long()
+        data_interaction_id = torch.from_numpy(data_interaction_id).unsqueeze(1).long()
+        data_group_id = torch.from_numpy(data_group_id).unsqueeze(1).long()
 
         output = dict(
             points=data,
             semantic_id=data_semantic_id if self.return_semantic_id else None,
             cluster_id=cluster_id if self.return_cluster_id else None,
+            interaction_id=data_interaction_id if self.return_interaction_id else None,
+            group_id=data_group_id if self.return_group_id else None,
         )
 
         return output
@@ -153,7 +164,8 @@ class PILArNet(Dataset):
         data = [item['points'] for item in batch]
         semantic_id = [item['semantic_id'] for item in batch]
         cluster_id = [item['cluster_id'] for item in batch]
-
+        interaction_id = [item['interaction_id'] for item in batch]
+        group_id = [item['group_id'] for item in batch]
         lengths = torch.tensor(
             [points.size(0) for points in data], dtype=torch.long
         )  # Shape: (B,)
@@ -170,11 +182,21 @@ class PILArNet(Dataset):
         if cluster_id[0] is not None:
             padded_cluster_id = pad_sequence(cluster_id, batch_first=True, padding_value=-1) # Shape: (B, N_max)
 
+        padded_interaction_id = None
+        if interaction_id[0] is not None:
+            padded_interaction_id = pad_sequence(interaction_id, batch_first=True, padding_value=-1) # Shape: (B, N_max)
+
+        padded_group_id = None
+        if group_id[0] is not None:
+            padded_group_id = pad_sequence(group_id, batch_first=True, padding_value=-1) # Shape: (B, N_max)
+
         out = dict(
             points=padded_points,
             lengths=lengths,
             semantic_id=padded_semantic_id,
             cluster_id=padded_cluster_id,
+            interaction_id=padded_interaction_id,
+            group_id=padded_group_id,
         )
         return out
     
@@ -319,12 +341,9 @@ class PILArNetDataModule(pl.LightningDataModule):
         """
         if not hasattr(self, 'train_dataset'):
             self.setup()
-
         class_counts = torch.tensor([1926651899.0, 2038240940.0, 34083197.0, 92015482.0, 1145363125.0])
-
         if self.train_dataset.remove_low_energy_scatters:
             class_counts = class_counts[:-1]
-
         return class_counts.sum() / class_counts
 
 def log_transform(x, xmax=1, eps=1e-7):
