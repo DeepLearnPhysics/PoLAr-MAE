@@ -182,7 +182,7 @@ def colored_pointcloud_predictions(
     palette_rgb = []
     for color in palette:
         color = color.lstrip("#")
-        rgb = np.array([int(color[i : i + 2], 16) for i in (0, 2, 4)]) / 255.0
+        rgb = np.array([int(color[i : i + 2], 16) for i in (0, 2, 4)]).astype(np.float32)
         palette_rgb.append(rgb)
 
     # Plot true labels
