@@ -17,6 +17,7 @@ from polarmae.layers.seg_head import SegmentationHead
 from polarmae.loss import SoftmaxFocalLoss, DiceLoss, TotalVariationLoss
 from polarmae.models.finetune.base import FinetuneModel
 from polarmae.utils.pylogger import RankedLogger
+from polarmae.layers.seg_head import IntermediateFusion
 from polarmae.layers.group_local_attention import GroupLocalAttention
 from math import sqrt
 import wandb
@@ -28,10 +29,10 @@ class SemanticSegmentation(FinetuneModel):
     def __init__(
         self,
         encoder: TransformerEncoder,
-        seg_decoder: Optional[TransformerDecoder],
         num_classes: int,
         class_temps: Optional[List[float]] = None,
         seg_head_fetch_layers: List[int] = [3, 7, 11],
+        seg_head_combination_method: Literal['concat', 'mean'] = 'mean',
         seg_head_dim: int = 384,
         seg_head_dropout: float = 0.5,
         condition_global_features: bool = False,
@@ -43,7 +44,7 @@ class SemanticSegmentation(FinetuneModel):
         token_local_attention_drop_rate: float = 0.0,
         # LR/optimizer
         learning_rate: float = 1e-3,
-        lr_scheduler_type: Literal['cosine', 'linear'] = 'cosine',
+        lr_scheduler_type: Literal['cosine', 'linear', 'wsd'] = 'cosine',
         optimizer_adamw_weight_decay: float = 0.05,
         lr_scheduler_linear_warmup_epochs: int = 80,
         lr_scheduler_linear_warmup_start_lr: float = 1e-6,
@@ -60,6 +61,7 @@ class SemanticSegmentation(FinetuneModel):
         loss_func: Literal["nll", "focal", "fancy"] = "nll",
         # Checkpoints
         pretrained_ckpt_path: Optional[str] = None,
+        start_lr_decay: bool = False,
         # deprecated args used in past training runs
         use_pos_enc_for_upsampling: bool = False,
         apply_local_attention: bool = False,
@@ -69,7 +71,6 @@ class SemanticSegmentation(FinetuneModel):
         super().configure_transformations()
 
         self.encoder = encoder
-        self.seg_decoder = seg_decoder
 
         self.loss_func = loss_func
         self.pretrained_ckpt_path = pretrained_ckpt_path
@@ -82,92 +83,35 @@ class SemanticSegmentation(FinetuneModel):
             self.class_temps = nn.Parameter(torch.tensor(self.class_temps, device=self.device), requires_grad=False)
             log.info(f"🌡️  Using class temps: tau = {self.class_temps} for {num_classes} classes")
 
+
+        self.point_downcast = nn.Linear(encoder.transformer.embed_dim, encoder.transformer.embed_dim // 6)
         if use_token_local_attention:
             self.gla = GroupLocalAttention(
-                embed_dim=(
-                    encoder.transformer.embed_dim // 6
-                    if not condition_global_features
-                    else encoder.transformer.embed_dim // 6
-                ),
+                embed_dim=encoder.transformer.embed_dim // 6,
                 num_heads=token_local_attention_heads,
                 proj_drop_rate=token_local_attention_drop_rate,
                 attn_drop_rate=token_local_attention_attn_drop_rate,
                 qkv_bias=True,
                 use_flash_attn=True,  # not good for yuge batch sizes
             )
-            self.gla_downcast = nn.Linear(
-                encoder.transformer.embed_dim, encoder.transformer.embed_dim // 6
-            )
-            # self.gla_upcast = nn.Linear(
-            #     encoder.transformer.embed_dim // 6, encoder.transformer.embed_dim
-            # )
-            self.upsampler = PointNetFeatureUpsampling(
-                in_channel=encoder.transformer.embed_dim // 6,
-                mlp=[encoder.transformer.embed_dim // 6],
-                # K=5,
-            )
-        else:
-            self.upsampler = PointNetFeatureUpsampling(
-                in_channel=encoder.transformer.embed_dim,
-                mlp=[encoder.transformer.embed_dim, encoder.transformer.embed_dim],
-                # K=5,
-            )
-
+        self.upsampler = PointNetFeatureUpsampling(
+            in_channel=encoder.transformer.embed_dim // 6,
+            mlp=[encoder.transformer.embed_dim // 6, encoder.transformer.embed_dim // 6],
+            K=5, # interpolation between K nearest neighbors
+        )
         self.seg_head = SegmentationHead(
-            self.encoder.embed_dim // 6 if (self.seg_decoder is None and self.condition_global_features and not use_token_local_attention) else 0,
-            0,  # event-wide label embedding -- 0 for polarmae!
-            encoder.transformer.embed_dim // 6,
-            seg_head_dim,
-            seg_head_dropout,
-            num_classes,
+            in_channels=self.encoder.embed_dim // 6 + (2 * self.condition_global_features), # 3x encoder dim if condition_global_features, else 1
+            seg_head_dim=seg_head_dim,
+            seg_head_dropout=seg_head_dropout,
+            num_classes=num_classes,
         )
-        if self.seg_decoder is not None:
-            log.info(
-                "Using decoder, so not aggregating token features (i.e. `seg_head_fetch_layers`) for use in seg head."
+        if seg_head_combination_method == 'concat':
+            self.combine_intermediate_layers = IntermediateFusion(
+                in_channels=len(seg_head_fetch_layers) * self.encoder.embed_dim,
+                out_channels=self.encoder.embed_dim,
             )
-
-        if self.hparams.loss_func == "nll":
-            self.loss_func = nn.NLLLoss(
-                weight=torch.ones(self.hparams.num_classes, device=self.device),
-                reduction="mean",
-                ignore_index=-1,
-            )
-        elif self.hparams.loss_func == 'focal':
-            self.loss_func = self.focal_loss = SoftmaxFocalLoss(
-                weight=torch.ones(self.hparams.num_classes, device=self.device),
-                reduction="mean",
-                ignore_index=-1,
-                gamma=2,
-            )
-        elif self.hparams.loss_func == 'fancy':
-            self.dice_loss = DiceLoss(
-                smooth=1,
-                ignore_index=-1,
-            )
-            self.focal_loss = SoftmaxFocalLoss(
-                weight=torch.ones(self.hparams.num_classes, device=self.device),
-                reduction="mean",
-                ignore_index=-1,
-                gamma=2,
-            )
-            self.loss_func = lambda logits, labels: 0.05 * self.dice_loss(logits, labels) + self.focal_loss(logits, labels)
-        else:
-            raise ValueError(f"Unknown loss function: {self.hparams.loss_func}")
-
-        self.ce_loss = nn.CrossEntropyLoss(
-            weight=torch.ones(self.hparams.num_classes, device=self.device),
-            reduction="mean",
-            ignore_index=-1,
-        )
-
-
-        group_radius = self.encoder.tokenizer.grouping.group_radius
-        self.tv_loss = TotalVariationLoss(
-            radius=2 * group_radius,
-            K=10,
-            reduction="mean",
-            apply_to_argmax=True,
-        )
+        elif seg_head_combination_method == 'mean':
+            self.combine_intermediate_layers = self.encoder.combine_intermediate_layers
 
     def setup(self, stage: Optional[str] = None) -> None:
         super().setup(stage)
@@ -227,34 +171,64 @@ class SemanticSegmentation(FinetuneModel):
         """ ------------------------------------------------------------------------ """
         """                                  losses                                  """
         """ ------------------------------------------------------------------------ """
+        if self.hparams.loss_func == "nll":
+            self.loss_func = nn.NLLLoss(
+                weight=self.trainer.datamodule.class_weights,
+                reduction="mean",
+                ignore_index=-1,
+            )
+        elif self.hparams.loss_func == 'focal':
+            self.loss_func = self.focal_loss = SoftmaxFocalLoss(
+                weight=self.trainer.datamodule.class_weights,
+                reduction="mean",
+                ignore_index=-1,
+                gamma=2,
+            )
+        elif self.hparams.loss_func == 'fancy':
+            self.dice_loss = DiceLoss(
+                smooth=1,
+                ignore_index=-1,
+            )
+            self.focal_loss = SoftmaxFocalLoss(
+                weight=self.trainer.datamodule.class_weights,
+                reduction="mean",
+                ignore_index=-1,
+                gamma=2,
+            )
+            self.loss_func = lambda logits, labels: 0.05 * self.dice_loss(logits, labels) + self.focal_loss(logits, labels)
+        else:
+            raise ValueError(f"Unknown loss function: {self.hparams.loss_func}")
 
-        for loss in ["dice_loss", "focal_loss", "loss_func"]:
-            if hasattr(self, loss) and hasattr(getattr(self, loss), 'weight') and getattr(self, loss).weight is not None:
-                getattr(self, loss).weight.copy_(self.trainer.datamodule.class_weights)
         self.ce_loss = nn.CrossEntropyLoss(
-            weight=torch.ones(self.hparams.num_classes, device=self.device),
+            weight=self.trainer.datamodule.class_weights,
             reduction="mean",
             ignore_index=-1,
         )
-        self.ce_loss.weight.copy_(self.trainer.datamodule.class_weights)
+
+
+        group_radius = self.encoder.tokenizer.grouping.group_radius
+        self.tv_loss = TotalVariationLoss(
+            radius=2 * group_radius,
+            K=10,
+            reduction="mean",
+            apply_to_argmax=True,
+        )
+
+        self.ce_loss = nn.CrossEntropyLoss(
+            weight=self.trainer.datamodule.class_weights,
+            reduction="mean",
+            ignore_index=-1,
+        )
 
         """ ------------------------------------------------------------------------ """
-        """                                  checkpoints                             """
-        """ ------------------------------------------------------------------------ """
         if self.hparams.pretrained_ckpt_path is not None:
-            self.load_pretrained_checkpoint(self.hparams.pretrained_ckpt_path)
+            super().load_pretrained_checkpoint(self.hparams.pretrained_ckpt_path)
             log.info('🔥  Loaded pretrained checkpoint.')
         else:
             log.info('🔥  No pretrained checkpoint loaded. Training from scratch??')
 
-        """ ------------------------------------------------------------------------ """
-        """                                  freezing                                 """
-        """ ------------------------------------------------------------------------ """
-        if self.hparams.encoder_freeze:
-            self.encoder.freeze()
-            log.info('🔥  Performing linear probing.')
-        else:
-            log.info('🔥  Not freezing encoder.')
+        self.encoder.freeze(self.hparams.encoder_freeze)
+        log.info(f'🔥  {"Freezing" if self.hparams.encoder_freeze else "Unfreezing"} encoder.')
 
     def forward(
             self, 
@@ -262,81 +236,62 @@ class SemanticSegmentation(FinetuneModel):
             lengths: torch.Tensor,
             labels: Optional[torch.Tensor] = None,
             class_slice: Optional[slice] = None,
-            return_logits: bool = False,
+            return_logprobs: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # run encoder as usual
+        assert len(points.shape) == 3, f"points must be of shape (B, N, C), got {points.shape}"
+        assert points.shape[1] == lengths.max(), f"points and lengths must have the same number of points, got {points.shape[1]} and {lengths.max()}"
+        assert len(lengths.shape) == 1, f"lengths must be of shape (B), got {lengths.shape}"
+        if labels is not None:
+            assert labels.shape[:2] == points.shape[:2], f"labels must be of shape (B, N) and same as points, got {labels.shape} but points.shape is {points.shape}"
 
         out = self.encoder.prepare_tokens(points, lengths, ids=labels)
         output = self.encoder(
             out["x"],
             out["pos_embed"],
             out["emb_mask"],
-            return_hidden_states=self.seg_decoder is None,
+            return_hidden_states=self.hparams.seg_head_fetch_layers != [],
             final_norm=self.hparams.apply_encoder_postnorm,
         )
-        batch_lengths = out['emb_mask'].sum(dim=1)
 
-        if self.seg_decoder is not None:
-            output = self.seg_decoder(output.last_hidden_state, out['pos_embed'], out['emb_mask'])
-            token_features = output.last_hidden_state
-        else:
-            # fetch intermediate layers & get averaged token features
-            if len(self.hparams.seg_head_fetch_layers) == 0:
-                token_features = output.last_hidden_state
-            else:
-                token_features = self.encoder.combine_intermediate_layers(
-                    output,
-                    out['emb_mask'],
-                    self.hparams.seg_head_fetch_layers,
-                ) # (B, T, C)
-            assert token_features.shape[1] == out['x'].shape[1], "token_features and tokens must have the same number of tokens!"
-
-            if self.condition_global_features:
-                # get global features
-                token_features_max = masked_max(token_features, out['emb_mask'])  # (B, C)
-                token_features_mean = masked_mean(token_features, out['emb_mask'])  # (B, C)
-
-                global_feature = torch.cat(
-                    [token_features_max, token_features_mean], dim=-1
-                )  # (B, 2*C')
+        token_features = output.last_hidden_state # (B, T, C)
+        if self.hparams.seg_head_fetch_layers != []: # fetch intermediate layers & get averaged token features
+            token_features = self.combine_intermediate_layers(
+                output.hidden_states,
+                out['emb_mask'],
+                self.hparams.seg_head_fetch_layers,
+            ) # (B, T, C)
 
         # Create point mask
         point_mask = torch.arange(lengths.max(), device=lengths.device).expand(
             len(lengths), -1
-        ) < lengths.unsqueeze(-1)
+        ) < lengths.unsqueeze(-1) # (B, N)
+        batch_lengths = out['emb_mask'].sum(dim=1) # (B,)
 
-        if self.hparams.use_token_local_attention:
-            # Use encoder's position embedding for points
-            # point_positions = self.encoder.pos_embed(points)
-            upscaled_feats, idx = self.upsampler(
-                points[..., :3],
-                out["centers"][:, :, :3],
-                points[..., :3],
-                self.gla_downcast(token_features),
-                lengths,
-                batch_lengths,
-                point_mask,
-            ) # (B, N, C // 6)
+        x, idx = self.upsampler(
+                        points[..., :3],
+                        out["centers"][:, :, :3],
+                        points[..., :3],
+                        self.point_downcast(token_features), # (C --> C // 6)
+                        lengths,
+                        batch_lengths,
+                        point_mask,
+                    ) # (B, N, C // 6)
 
-            # Apply TokenLocalAttention
-            if self.condition_global_features:
-                B, N, C = token_features.shape
-                context_features = self.gla_downcast(global_feature.reshape(-1, C)).reshape(B, 2, -1) # (B, 2, C // 6)
-            else:
-                context_features = None
-            point_features = self.gla(
-                upscaled_feats=upscaled_feats,
-                grouping_idx=out["grouping_idx"],
-                grouping_point_mask=out["point_mask"],
-                context_tokens=context_features,
-            ) # (B, N, C // 6)
+        x = self.gla(
+            upscaled_feats=x,
+            grouping_idx=out["grouping_idx"],
+            grouping_point_mask=out["point_mask"],
+        ) if self.hparams.use_token_local_attention else x # (B, N, C // 6)
 
-            # upcast token features
-            # point_features = self.gla_upcast(point_features) # (B, N, C)
-            x = point_features
-        elif self.seg_decoder is None and self.condition_global_features:
+        if self.condition_global_features:
             B, N, C = points.shape
-            global_feature = global_feature.reshape(B, -1) # (B, 2*C')
+            global_feature = torch.cat(
+                [
+                    self.point_downcast(masked_max(token_features, out['emb_mask'])), # (B, C // 6)
+                    self.point_downcast(masked_mean(token_features, out['emb_mask'])), # (B, C // 6)
+                 ], dim=-1
+            )  # (B, 2 * (C // 6))
             x = torch.cat(
                 [x, global_feature.unsqueeze(-1).expand(-1, -1, N).transpose(1, 2)], dim=-1
             )  # (B, N, 2*C')
@@ -350,8 +305,8 @@ class SemanticSegmentation(FinetuneModel):
             x = x / self.class_temps[None, None, :]
 
         return {
-            'x': x if return_logits else F.log_softmax(x, dim=-1),
-            'logits': x if return_logits else None,
+            'x': F.log_softmax(x, dim=-1) if return_logprobs else x,
+            'logits': x,
             # 'idx': idx,
             'point_mask': point_mask,
             'id_groups': out['id_groups'],
@@ -364,7 +319,7 @@ class SemanticSegmentation(FinetuneModel):
         lengths: torch.Tensor,
         labels: torch.Tensor,
         class_mask: Optional[slice] = None,
-        return_logits: bool = False,
+        return_logprobs: bool = False,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
 
         out = self.forward(
@@ -372,30 +327,19 @@ class SemanticSegmentation(FinetuneModel):
             lengths,
             labels,
             class_mask,
-            return_logits=self.hparams.loss_func == 'fancy' or return_logits,
+            return_logprobs=self.hparams.loss_func == 'nll' or return_logprobs,
         )
-
-        loss = self.loss_func(
-            out['x'][out['point_mask']],
-            labels.squeeze(-1)[out['point_mask']]
-        )
-        with torch.no_grad():
-            ce_loss = self.ce_loss(
-                out['x'][out['point_mask']],
-                labels.squeeze(-1)[out['point_mask']]
-            )
-
-        loss_dict = {
-            self.hparams.loss_func: loss,
-            'ce': ce_loss,
-            'tv': self.tv_loss(points, lengths, out['x']),
-        }
         output_dict = { 
             'logits': out['logits'],
             'pred': out['id_pred'],
             'labels': labels,
         }
 
+        loss = self.loss_func(out['x'][out['point_mask']], labels.squeeze(-1)[out['point_mask']]) # (B,)
+        with torch.no_grad():
+            ce_loss = self.ce_loss(out['x'][out['point_mask']], labels.squeeze(-1)[out['point_mask']]) # (B,)
+            tv_loss = self.tv_loss(points, lengths, out['x'])
+        loss_dict = {self.hparams.loss_func: loss, 'ce': ce_loss, 'tv': tv_loss}
         return loss_dict, output_dict
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
@@ -403,73 +347,22 @@ class SemanticSegmentation(FinetuneModel):
             self.train_transformations(batch['points']),
             batch['lengths'],
             batch['semantic_id'],
+            return_logprobs=self.hparams.loss_func == 'nll',
         )
-        bsz = batch['points'].shape[0]
-        self.log_losses(loss_dict, prefix='train_', batch_size=bsz)
-        pred, labels = output_dict['pred'], output_dict['labels'].squeeze(-1)
-        for metric in ['macc', 'mprecision', 'acc', 'precision', 'f1_score', 'f1_score_m']:
-            self.log(f'train_{metric}', getattr(self, f'train_{metric}')(pred, labels).to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-        ce_loss = loss_dict['ce']
-
-        # Compute per-class metrics during training (optional, can be slower)
-        if self.current_epoch % 5 == 0:  # Compute every 5 epochs to avoid slowing down training
-            f1_perclass = self.train_f1_score_perclass(pred, labels)
-            acc_perclass = self.train_acc_perclass(pred, labels)
-            precision_perclass = self.train_precision_perclass(pred, labels)
-            
-            # Log per-class metrics
-            for cls_idx in range(self.hparams.num_classes):
-                if cls_idx < len(f1_perclass):
-                    cls_name = self.seg_class_to_category.get(cls_idx, f"class_{cls_idx}")
-                    self.log(f'train_f1_score_{cls_name}', f1_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-                    self.log(f'train_acc_{cls_name}', acc_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-                    self.log(f'train_precision_{cls_name}', precision_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-
-        self.log('train_ce', ce_loss.to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-        loss = loss_dict[self.hparams.loss_func]# + 1e-3 * loss_dict['tv']
-        return loss
+        super().log_losses(loss_dict, prefix='train', batch_size=batch['points'].shape[0])
+        self.log_metrics(output_dict['pred'], output_dict['labels'].squeeze(-1), loss_dict, prefix='train', batch_size=batch['points'].shape[0])
+        return loss_dict[self.hparams.loss_func]
 
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         loss_dict, output_dict = self.compute_loss(
             self.val_transformations(batch['points']),
             batch['lengths'],
             batch['semantic_id'],
-            return_logits=True,
+            return_logprobs=self.hparams.loss_func == 'nll',
         )
-
-        # visualize if batch_idx == 0. let's hope that the dataloader doesn't shuffle the data between epochs
-        if batch_idx == 0:
-            for i in range(5):
-                truth, pred, pred_weighted = colored_pointcloud_batch(output_dict, batch, batch_idx=i)
-                truth[..., 3:6] *= 255
-                pred[..., 3:6] *= 255
-                pred_weighted[..., 3:6] *= 255
-                self.logger.experiment.log({
-                    f"preds_{i}": [wandb.Object3D(truth, caption=f"Batch {batch_idx}, Instance {i}"), wandb.Object3D(pred, caption=f"Batch {batch_idx}, Instance {i}"), wandb.Object3D(pred_weighted, caption=f"Batch {batch_idx}, Instance {i}")]
-                })
-
-        bsz = batch['points'].shape[0]
-        self.val_bsz = bsz
-        self.log_losses(loss_dict, prefix='val_', batch_size=bsz)
-        pred, labels = output_dict['pred'], output_dict['labels'].squeeze(-1)
-        for metric in ['macc', 'mprecision', 'acc', 'precision', 'f1_score', 'f1_score_m']:
-            self.log(f'val_{metric}', getattr(self, f'val_{metric}')(pred, labels).to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz, prog_bar=True)
-        ce_loss = loss_dict['ce']
-        self.log('val_ce', ce_loss.to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-
-        # Compute per-class metrics
-        f1_perclass = self.val_f1_score_perclass(pred, labels)
-        acc_perclass = self.val_acc_perclass(pred, labels)
-        precision_perclass = self.val_precision_perclass(pred, labels)
-        
-        # Log per-class metrics
-        for cls_idx in range(self.hparams.num_classes):
-            if cls_idx < len(f1_perclass):
-                cls_name = self.seg_class_to_category.get(cls_idx, f"class_{cls_idx}")
-                self.log(f'val_f1_score_{cls_name}', f1_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz, prog_bar=True)
-                self.log(f'val_acc_{cls_name}', acc_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-                self.log(f'val_precision_{cls_name}', precision_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=bsz)
-
+        super().log_losses(loss_dict, prefix='val', batch_size=batch['points'].shape[0])
+        self.log_pointcloud(output_dict, batch, batch_idx)
+        self.log_metrics(output_dict['pred'], output_dict['labels'].squeeze(-1), loss_dict, prefix='val', batch_size=batch['points'].shape[0])
         ious = compute_shape_ious(
             output_dict['logits'],
             output_dict['labels'],
@@ -483,22 +376,48 @@ class SemanticSegmentation(FinetuneModel):
         self.ious = []
 
     def on_validation_epoch_end(self) -> None:
-
-        if hasattr(self, 'token_local_attention') and self.token_local_attention is not None:
-            self.logger.experiment.log({"val_localattn_gamma": wandb.Histogram(self.token_local_attention.ls.gamma.detach().cpu().numpy())})
-
         shape_mious = {cat: [] for cat in self.category_to_seg_classes.keys()}
-
         for d in self.ious:
             for k, v in d.items():
                 shape_mious[k] = shape_mious[k] + v
-
         all_shape_mious = torch.stack([miou for mious in shape_mious.values() for miou in mious])
         cat_mious = {k: torch.stack(v).mean() for k, v in shape_mious.items() if len(v) > 0}
-
         # instance (total) mIoU
         self.log("val_ins_miou", all_shape_mious.mean().to('cuda'), sync_dist=True, batch_size=self.val_bsz)
         # mIoU averaged over categories
         self.log("val_cat_miou", torch.stack(list(cat_mious.values())).mean().to('cuda'), sync_dist=True, batch_size=self.val_bsz)
         for cat in sorted(cat_mious.keys()):
             self.log(f"val_cat_miou_{cat}", cat_mious[cat].to('cuda'), sync_dist=True, batch_size=self.val_bsz)
+
+    def log_metrics(self, pred: torch.Tensor, labels: torch.Tensor, loss_dict: Dict[str, torch.Tensor], prefix: str = 'train') -> None:
+        assert prefix in ['train', 'val'], "prefix must be either 'train' or 'val'"
+
+        # macro metrics
+        for metric in ['macc', 'mprecision', 'acc', 'precision', 'f1_score', 'f1_score_m']:
+            self.log(f'{prefix}_{metric}', getattr(self, f'{prefix}{metric}')(pred, labels).to('cuda'), on_epoch=True, sync_dist=True, batch_size=self.val_bsz, prog_bar=prefix=='val')
+        ce_loss = loss_dict['ce']
+        self.log(f'{prefix}_ce', ce_loss.to('cuda'), on_epoch=True, sync_dist=True, batch_size=self.val_bsz)
+
+        # per-class metrics
+        f1_perclass = getattr(self, f'{prefix}_f1_score_perclass')(pred, labels)
+        acc_perclass = getattr(self, f'{prefix}_acc_perclass')(pred, labels)
+        precision_perclass = getattr(self, f'{prefix}_precision_perclass')(pred, labels)
+        for cls_idx in range(self.hparams.num_classes):
+            if cls_idx < len(f1_perclass):
+                cls_name = self.seg_class_to_category.get(cls_idx, f"class_{cls_idx}")
+                self.log(f'{prefix}_f1_score_{cls_name}', f1_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=self.val_bsz, prog_bar=prefix=='val')
+                self.log(f'{prefix}_acc_{cls_name}', acc_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=self.val_bsz)
+                self.log(f'{prefix}_precision_{cls_name}', precision_perclass[cls_idx].to('cuda'), on_epoch=True, sync_dist=True, batch_size=self.val_bsz)
+
+    def log_pointcloud(self, output_dict: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
+        if batch_idx != 0:
+            return # only log first batch
+        for i in range(5):
+            truth, pred, pred_weighted = colored_pointcloud_batch(output_dict, batch, batch_idx=i)
+            self.logger.experiment.log({
+                f"preds_{i}": [
+                    wandb.Object3D(truth, caption=f"Batch {batch_idx}, Instance {i}"),
+                    wandb.Object3D(pred, caption=f"Batch {batch_idx}, Instance {i}"),
+                    wandb.Object3D(pred_weighted, caption=f"Batch {batch_idx}, Instance {i}"),
+                ]
+            })

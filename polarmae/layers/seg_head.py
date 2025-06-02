@@ -1,24 +1,23 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from polarmae.layers.masking import MaskedBatchNorm1d
+from polarmae.layers.masking import MaskedBatchNorm1d, masked_layer_norm
+from typing import List
 
 
 class SegmentationHead(nn.Module):
     """Takes in latent points and outputs segmentation logits for each point"""
     def __init__(
         self,
-        encoder_dim: int,
-        label_embedding_dim: int,
-        upsampling_dim: int,
+        in_channels: int,
         seg_head_dim: int,
         seg_head_dropout: float,
-        num_seg_classes: int,
+        num_classes: int,
     ):
         super().__init__()
 
         self.conv1 = nn.Conv1d(
-            2 * encoder_dim + label_embedding_dim + upsampling_dim,
+            in_channels,
             seg_head_dim,
             1,
             bias=False,
@@ -32,7 +31,7 @@ class SegmentationHead(nn.Module):
         self.relu2 = nn.ReLU()
         # self.dropout2 = nn.Dropout(seg_head_dropout)  # Uncomment if needed
 
-        self.conv3 = nn.Conv1d(seg_head_dim // 2, num_seg_classes, 1)
+        self.conv3 = nn.Conv1d(seg_head_dim // 2, num_classes, 1)
 
     def forward(self, x, point_mask=None):
         """
@@ -60,3 +59,15 @@ class SegmentationHead(nn.Module):
         x = self.conv3(x)
 
         return x
+
+class IntermediateFusion(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.linear = nn.Linear(in_channels, out_channels)
+
+    def forward(self, hidden_states: List[torch.Tensor], mask=None, layers: List[int] = []) -> torch.Tensor:
+        hidden_states = [
+            masked_layer_norm(hidden_states[i], hidden_states[i].shape[-1], mask)
+            for i in layers
+        ]
+        return self.linear(torch.cat(hidden_states, dim=-1))
