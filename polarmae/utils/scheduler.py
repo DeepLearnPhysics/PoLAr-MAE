@@ -247,6 +247,8 @@ class LinearWarmupLR(_LRScheduler):
         warmup_epochs: int,
         warmup_start_lr: float = 0.0,
         last_epoch: int = -1,
+        cooldown_end_lr: float = 0.0,
+        cooldown_epochs: int = -1,
     ) -> None:
         """
         Args:
@@ -259,11 +261,16 @@ class LinearWarmupLR(_LRScheduler):
         """
         self.warmup_epochs = warmup_epochs
         self.warmup_start_lr = warmup_start_lr
+        self.cooldown_epochs = cooldown_epochs
+        self.cooldown_end_lr = cooldown_end_lr
+        self._starting_epoch = -1
 
         super().__init__(optimizer, last_epoch)
 
     def get_lr(self) -> List[float]:
         """Compute learning rate using chainable form of the scheduler."""
+        if self._starting_epoch == -1 and self.last_epoch > 0:
+            self._starting_epoch = self.last_epoch
         if not self._get_lr_called_within_step:
             warnings.warn(
                 "To get the last learning rate computed by the scheduler; please use `get_last_lr()`.",
@@ -278,19 +285,38 @@ class LinearWarmupLR(_LRScheduler):
                 + (base_lr - self.warmup_start_lr) / (self.warmup_epochs - 1)
                 for base_lr, group in zip(self.base_lrs, self.optimizer.param_groups)
             ]
-        # After warmup, maintain constant learning rate at base_lr
-        return self.base_lrs
-
-    def _get_closed_form_lr(self) -> List[float]:
-        """Called when epoch is passed as a param to the `step` function of the scheduler."""
-        if self.last_epoch < self.warmup_epochs:
+        # Check if we're in cooldown phase
+        if (self.cooldown_epochs >= 0):            # Cosine decay from base_lr to cooldown_end_lr
+            cooldown_progress = (self.last_epoch - self._starting_epoch) / self.cooldown_epochs
+            cooldown_progress = min(cooldown_progress, 1.0)  # Clamp to [0, 1]
             return [
-                self.warmup_start_lr
-                + self.last_epoch
-                * (base_lr - self.warmup_start_lr)
-                / (self.warmup_epochs - 1)
+                self.cooldown_end_lr + 0.5 * (base_lr - self.cooldown_end_lr) * (1 + math.cos(math.pi * cooldown_progress))
                 for base_lr in self.base_lrs
             ]
-
         # After warmup, maintain constant learning rate at base_lr
         return self.base_lrs
+
+
+class WarmupStableDecay(_LRScheduler):
+    def __init__(self, optimizer, num_warmup, num_stable,
+                 num_decay, min_lr_ratio=0.05, last_epoch=-1):
+        self.nw, self.ns, self.nd = num_warmup, num_stable, num_decay
+        self.min_ratio = min_lr_ratio
+        self.decay_done = False
+        super().__init__(optimizer, last_epoch)
+
+    def begin_decay(self):
+        self.ns = max(0, self.last_epoch + 1 - self.nw)
+
+    def get_lr(self):
+        t = self.last_epoch + 1
+        if t <= self.nw:                       # warm-up
+            scale = t / self.nw
+        elif t <= self.nw + self.ns:           # stable
+            scale = 1.0
+        else:                                  # decay
+            td = t - self.nw - self.ns
+            progress = min(td / self.nd, 1.0)
+            scale = self.min_ratio + 0.5*(1-self.min_ratio)*(1+math.cos(math.pi*progress))
+            self.decay_done = progress >= 1.0  # <-- flip flag at the end
+        return [base_lr * scale for base_lr in self.base_lrs]
