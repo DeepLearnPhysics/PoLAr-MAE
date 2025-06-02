@@ -64,7 +64,9 @@ class TransformerEncoder(nn.Module):
         for block in self.transformer.blocks:
             block.attn.use_flash_attn = use_flash
 
-    def freeze(self):
+    def freeze(self, freeze: bool = True):
+        if not freeze:
+            return
         for param in self.parameters():
             param.requires_grad = False
         # unfreeze the prefix tokens if prefix tuning is enabled
@@ -160,12 +162,12 @@ class TransformerEncoder(nn.Module):
 
     def combine_intermediate_layers(
         self,
-        output: TransformerOutput,
+        hidden_states: List[torch.Tensor],
         mask: Optional[torch.Tensor] = None,
         layers: List[int] = [0],
     ) -> torch.Tensor:
         hidden_states = [
-            masked_layer_norm(output.hidden_states[i], output.hidden_states[i].shape[-1], mask)
+            masked_layer_norm(hidden_states[i], hidden_states[i].shape[-1], mask)
             for i in layers
         ]
         return torch.stack(hidden_states, dim=0).mean(0)
