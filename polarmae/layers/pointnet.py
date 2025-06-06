@@ -16,6 +16,7 @@ class MaskedMiniPointNet(nn.Module):
         equivariant: bool = False,
     ):
         super().__init__()
+        self.feature_dim = feature_dim
         self.first_conv = nn.Sequential(
             nn.Conv1d(channels, hidden_dim1, 1, bias=False),
             MaskedBatchNorm1d(hidden_dim1),

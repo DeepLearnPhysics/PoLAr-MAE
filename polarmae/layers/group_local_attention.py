@@ -125,18 +125,20 @@ class GroupLocalAttention(nn.Module):
 
         return x_groups_attn, attn
 
+    @staticmethod
     def average_groups(
-        self,
         attended_groups: torch.Tensor,
         grouping_idx: torch.Tensor,
         points: torch.Tensor,
         grouping_point_mask: torch.Tensor,
+        fill_with_original_points: bool = False,
     ) -> torch.Tensor:
         # prepare indices and groups:
         # - fill empty indices with 0
         # - flatten indices
         # - flatten groups
-        B, N_max, C = points.shape
+        B, N_max, _ = points.shape
+        C = attended_groups.shape[-1]
         filled_indices = fill_empty_indices(grouping_idx)
         filled_indices_flat = filled_indices.view(B, -1)  # (B, G*K)
         filled_indices_flat[filled_indices_flat.eq(-1)] = 0
@@ -161,7 +163,7 @@ class GroupLocalAttention(nn.Module):
 
         # count the number of points in each group
         count = torch.zeros(
-            B, N_max, 1, device=points.device, dtype=points.dtype
+            B, N_max, 1, device=attended_groups.device, dtype=attended_groups.dtype
         )  # (B, N_max, 1)
         count = count.scatter_add(
             dim=1,
@@ -170,7 +172,7 @@ class GroupLocalAttention(nn.Module):
         )  # (B, N_max, 1)
 
         # set points with count=0 in accumulator to the points themselves
-        if self.fill_with_original_points:
+        if fill_with_original_points:
             accumulator[count.squeeze().eq(0)] = points[count.squeeze().eq(0)]
 
         # clamp count to 1.0 to avoid div by zero
@@ -205,6 +207,7 @@ class GroupLocalAttention(nn.Module):
             grouping_idx,
             upscaled_feats,
             grouping_point_mask,
+            self.fill_with_original_points,
         )
 
         upscaled_feats = upscaled_feats + self.layer_scale(average_groups)
