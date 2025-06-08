@@ -3,7 +3,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-__global__ void greedy_reduction_kernel(
+__global__ void shared_memory_greedy_reduction_kernel(
     const int* __restrict__ sorted_indices,
     const int* __restrict__ idx,
     const int* __restrict__ lengths,
@@ -13,16 +13,18 @@ __global__ void greedy_reduction_kernel(
     int num_neighbors,
     int ignore_idx
 ) {
+    extern __shared__ bool shared_retain[];
+    
     int batch_idx = blockIdx.x;
-    int sphere_offset = blockIdx.y * blockDim.x + threadIdx.x;
+    int tid = threadIdx.x;
     
     if (batch_idx >= num_batches) return;
     
     int valid_length = lengths[batch_idx];
     
-    // init retain array
-    for (int i = sphere_offset; i < num_spheres; i += blockDim.x * gridDim.y) {
-        retain[batch_idx * num_spheres + i] = (i < valid_length);
+    // init shared memory
+    for (int i = tid; i < num_spheres; i += blockDim.x) {
+        shared_retain[i] = (i < valid_length);
     }
     __syncthreads();
     
@@ -30,22 +32,24 @@ __global__ void greedy_reduction_kernel(
     for (int i = 0; i < num_spheres; i++) {
         int sphere_idx = sorted_indices[batch_idx * num_spheres + i];
         
-        // all threads need this check
-        bool should_process = retain[batch_idx * num_spheres + sphere_idx];
-        __syncthreads();
-        
-        if (!should_process) continue;
+        if (!shared_retain[sphere_idx]) continue;
         
         // process neighbors
-        for (int j = sphere_offset; j < num_neighbors; j += blockDim.x * gridDim.y) {
+        for (int j = tid; j < num_neighbors; j += blockDim.x) {
             int neighbor = idx[batch_idx * num_spheres * num_neighbors + sphere_idx * num_neighbors + j];
             if (neighbor != sphere_idx && neighbor != ignore_idx) {
-                atomicAnd((int*)&retain[batch_idx * num_spheres + neighbor], 0);
+                shared_retain[neighbor] = false;
             }
         }
         __syncthreads();
     }
+    
+    // write back to global memory
+    for (int i = tid; i < num_spheres; i += blockDim.x) {
+        retain[batch_idx * num_spheres + i] = shared_retain[i];
+    }
 }
+
 
 __global__ void optimized_greedy_reduction_kernel(
     const int* __restrict__ sorted_indices,
