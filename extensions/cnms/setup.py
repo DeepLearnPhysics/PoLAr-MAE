@@ -21,7 +21,7 @@ if os.system('nvidia-smi -q') == 0:
         CUDA_FLAGS.extend([f"-gencode=arch=compute_{arch.replace('.', '')},code=sm_{arch.replace('.', '')}", f"-gencode=arch=compute_{arch.replace('.', '')},code=compute_{arch.replace('.', '')}"])
 
 CXX_FLAGS = ["-O3", "-march=native", "-ffast-math", "-ftree-vectorize", "-fomit-frame-pointer"]
-NVCC_FLAGS = ["-O3", "--use_fast_math", "-lineinfo"]
+NVCC_FLAGS = ["-O3", "--use_fast_math"]
 
 setup(
     name="cnms",
