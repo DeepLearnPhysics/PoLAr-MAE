@@ -34,7 +34,7 @@ class SSLModel(BaseModel):
                     f"svm_val_acc_{dataset_name}", summary="last,max"
                 )
 
-    def validate(self):
+    def validate(self, postnorm=False):
         # Lightning controls the `training` and `grad_enabled` state. Don't want to mess with it, but make sure it's correct.
         assert not self.training
         assert not torch.is_grad_enabled()
@@ -62,7 +62,7 @@ class SSLModel(BaseModel):
                 labels_batch = batch['semantic_id'].cuda()
                 with torch.no_grad():
                     out = self.encoder.prepare_tokens(data, lengths, ids=labels_batch)
-                    x = self.encoder.transformer(out['x'], out['pos_embed'], out['emb_mask'], final_norm=False).last_hidden_state.reshape(-1, self.encoder.embed_dim)
+                    x = self.encoder.transformer(out['x'], out['pos_embed'], out['emb_mask'], final_norm=postnorm).last_hidden_state.reshape(-1, self.encoder.embed_dim)
                     semantic_ids = out['id_groups'].reshape(-1, out['id_groups'].shape[2])
 
                     # Vectorized computation to replace the loop
@@ -95,17 +95,11 @@ class SSLModel(BaseModel):
         x_val, y_val = xy(datamodule.svm_val_dataloader())  # type: ignore
 
         # PCA down to 128 dimensions
-        pca = PCA(n_components=128)
-        x_train = pca.fit_transform(x_train)
-        x_val = pca.transform(x_val)
+        # pca = PCA(n_components=128)
+        # x_train = pca.fit_transform(x_train)
+        # x_val = pca.transform(x_val)
 
         svm_C: float = self.hparams.svm_validation_C  # type: ignore
-        # svm = SGDClassifier(loss="hinge", penalty="l2", max_iter=1000, tol=1e-3, class_weight="balanced", random_state=0, n_jobs=4)
-        # n_estimators = 5
-        # svm = BaggingClassifier(SVC(
-        #     kernel='linear', probability=False, class_weight='balanced', random_state=0), 
-        #     max_samples=1.0 / n_estimators, n_estimators=n_estimators, random_state=0,
-        #     n_jobs=n_estimators)
         svm = OneVsRestClassifier(LinearSVC(C=svm_C, class_weight='balanced', random_state=0), n_jobs=y_train.shape[1])
         svm.fit(x_train, y_train)  # type: ignore
         train_acc: float = svm.score(x_train, y_train)  # type: ignore
@@ -125,11 +119,21 @@ class SSLModel(BaseModel):
         assert not self.training
         assert not torch.is_grad_enabled()
 
-        svm_train_acc, svm_val_acc, train_class_scores, val_class_scores = self.validate()
+        svm_train_acc, svm_val_acc, train_class_scores, val_class_scores = self.validate(postnorm=False)
         batch_size = self.trainer.datamodule.hparams.svm_batch_size
-        self.log("svm_train_acc", svm_train_acc, sync_dist=True, batch_size=batch_size)
-        self.log("svm_val_acc", svm_val_acc, sync_dist=True, batch_size=batch_size)
+        self.log("svm_train_acc_no_postnorm", svm_train_acc, sync_dist=True, batch_size=batch_size)
+        self.log("svm_val_acc_no_postnorm", svm_val_acc, sync_dist=True, batch_size=batch_size)
         for label, score in train_class_scores.items():
-            self.log(f"svm_train_class_f1_{label}", score, sync_dist=True, batch_size=batch_size)
+            self.log(f"svm_train_class_f1_larnet_no_postnorm_{label}", score, sync_dist=True, batch_size=batch_size)
         for label, score in val_class_scores.items():
-            self.log(f"svm_val_class_f1_{label}", score, sync_dist=True, batch_size=batch_size)
+            self.log(f"svm_val_class_f1_larnet_no_postnorm_{label}", score, sync_dist=True, batch_size=batch_size)
+
+        if self.encoder.transformer.norm.__class__.__name__ != "Identity":
+            svm_train_acc, svm_val_acc, train_class_scores, val_class_scores = self.validate(postnorm=True)
+            batch_size = self.trainer.datamodule.hparams.svm_batch_size
+            self.log("svm_train_acc_postnorm", svm_train_acc, sync_dist=True, batch_size=batch_size)
+            self.log("svm_val_acc_postnorm", svm_val_acc, sync_dist=True, batch_size=batch_size)
+            for label, score in train_class_scores.items():
+                self.log(f"svm_train_class_f1_larnet_postnorm_{label}", score, sync_dist=True, batch_size=batch_size)
+            for label, score in val_class_scores.items():
+                self.log(f"svm_val_class_f1_larnet_postnorm_{label}", score, sync_dist=True, batch_size=batch_size)
