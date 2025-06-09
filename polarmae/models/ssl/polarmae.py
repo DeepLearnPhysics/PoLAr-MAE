@@ -33,6 +33,7 @@ class PoLArMAE(SSLModel):
         transformation_center: torch.Tensor | List[float] | float = torch.tensor([768, 768, 768]) / 2,
         transformation_scale_factor: torch.Tensor | List[float] | float = 1 / (768 * sqrt(3) / 2),
         transformation_rotate_dims: Optional[List[int]] = [0,1,2],
+        transformation_jitter_std: Optional[float] = 0.0,
         transformation_rotate_degs: Optional[float] = None,
         svm_validation: Dict[str, pl.LightningDataModule] = {},
         svm_validation_C=0.005,  # C=0.012 copied from Point-M2AE code
@@ -72,17 +73,16 @@ class PoLArMAE(SSLModel):
 
         # Energy that takes in encoder.embed_dim*2 and outputs 32x1 (32 pt, 1 energy channel)
         self.embed_dim = encoder.embed_dim
-        assert self.embed_dim % 4 == 0, "embed_dim must be divisible by 4"
         self.equivariant_patch_encoder = MaskedMiniPointNet(
             channels=3,
-            feature_dim=self.embed_dim // 4,
+            feature_dim=64,
             equivariant=True,
             hidden_dim1=64,
             hidden_dim2=64,
         )
 
         self.energy_decoder = nn.Conv1d(
-            self.embed_dim + self.embed_dim // 4, # 384 + 96
+            self.embed_dim + 64, # 384 + 64
             1 * encoder.tokenizer.grouping.group_max_points,
             1,
         )  # 2*embed_dim (1 embed_dim for encoded positions, 1 for regressed masked tokens)
@@ -128,20 +128,19 @@ class PoLArMAE(SSLModel):
             equivariant_patch_encoder_output = self.equivariant_patch_encoder(
                 masked_groups[..., :3], masked_point_mask
             )
-        # concatenate output with encoded masked tokens
-        decoder_input = torch.cat(
-            [equivariant_patch_encoder_output, masked_output], dim=1
-        ) # (B*G, 384 + 96, S)
+            # concatenate output with encoded masked tokens
+            decoder_input = torch.cat(
+                [equivariant_patch_encoder_output, masked_output], dim=1
+            ) # (B*G, 384 + 96, S)
 
-        # decode energy from embeddings
-        decoded_energy = self.energy_decoder(
-            decoder_input.transpose(0, 1)
-        ).transpose(0, 1)
-        
-        energy_loss = F.huber_loss(
-            decoded_energy[masked_point_mask.squeeze(1)].float(), masked_groups[masked_point_mask.squeeze(1)][..., -1].float(),
-            delta=0.2
-        )
+            # decode energy from embeddings
+            decoded_energy = self.energy_decoder(
+                decoder_input.transpose(0, 1)
+            ).transpose(0, 1)
+            
+            energy_loss = F.mse_loss(
+                decoded_energy[masked_point_mask.squeeze(1)].float(), masked_groups[masked_point_mask.squeeze(1)][..., -1].float(),
+            )
 
         self.tokens_processed += out['emb_mask'].sum()
 
@@ -181,7 +180,7 @@ class PoLArMAE(SSLModel):
         self.log_losses(loss_dict, prefix='loss/val_', batch_size=points.shape[0])
         loss = sum(loss_dict[k] * self.hparams.loss_weights.get(k, 1.0) for k in loss_dict.keys())
         batch_size = points.shape[0]
-        self.log('loss/val', loss, sync_dist=True, on_epoch=True, on_step=False, batch_size=batch_size)
+        self.log('loss/val', loss, sync_dist=True, on_epoch=True, on_step=False, batch_size=batch_size, prog_bar=True)
         for k, v in info_dict.items():
             self.log(f'info/val_{k}', v, sync_dist=True, on_epoch=True, on_step=False, batch_size=batch_size)
         self.log(

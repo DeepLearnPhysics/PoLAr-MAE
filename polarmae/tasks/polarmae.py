@@ -33,15 +33,16 @@ if __name__ == "__main__":
                     monitor="loss/val",
                 ),
                 ModelCheckpoint(
-                    monitor="svm_val_acc",
+                    monitor="svm_val_class_f1_larnet_postnorm_macro",
                     mode="max",
-                    filename="{epoch}-{step}-{svm_val_acc:.4f}",
+                    filename="{epoch}-{step}-{svm_val_class_f1_larnet_postnorm_macro:.4f}",
                 ),
                 ModelCheckpoint(
-                    monitor="svm_val_class_f1_macro",
+                    monitor="svm_val_class_f1_larnet_no_postnorm_macro",
                     mode="max",
-                    filename="{epoch}-{step}-{svm_val_class_f1_macro:.4f}",
+                    filename="{epoch}-{step}-{svm_val_class_f1_larnet_no_postnorm_macro:.4f}",
                 ),
+
                 # ModelCheckpoint(
                 #     save_top_k=4,
                 #     monitor="epoch", # checked every `check_val_every_n_epoch` epochss

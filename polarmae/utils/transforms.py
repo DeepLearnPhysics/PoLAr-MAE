@@ -192,6 +192,36 @@ class PointcloudTranslation(nn.Module):
         return points
 
 
+class PointcloudJitter(nn.Module):
+    def __init__(
+        self,
+        std: float = 0.01,
+        jitter_xyz: Tuple[bool, bool, bool] = (True, True, True),
+    ):
+        """
+        Add random jitter (noise) to point coordinates.
+        
+        Args:
+            std: Standard deviation of the Gaussian noise
+            clip: Maximum absolute value of the jitter (noise is clipped to [-clip, clip])
+            jitter_xyz: Which dimensions to apply jitter to (x, y, z)
+        """
+        super().__init__()
+        self.std = std
+        self.jitter_xyz = jitter_xyz
+
+    def forward(self, points: torch.Tensor):
+        # points: (B, N, 3)
+        jitter = torch.randn_like(points[:, :, :3]) * self.std
+        
+        # Apply jitter only to specified dimensions
+        for i, apply_jitter in enumerate(self.jitter_xyz):
+            if apply_jitter:
+                points[:, :, i] = points[:, :, i] + jitter[:, :, i]
+        
+        return points
+
+
 class PointcloudRotation(nn.Module):
     def __init__(self, dims: Sequence[int], deg: Optional[int] = None):
         # deg: \in [0...179], eg 45 means rotation steps of 45 deg are allowed

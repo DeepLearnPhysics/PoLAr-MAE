@@ -63,6 +63,11 @@ class BaseModel(pl.LightningModule):
                 return transforms.PointcloudHeightNormalization(
                     self.hparams.transformation_height_normalize_dim
                 )
+            elif name == "jitter":
+                return transforms.PointcloudJitter(
+                    std=self.hparams.transformation_jitter_std,
+                    jitter_xyz=(True, True, True)
+                )
             else:
                 raise RuntimeError(f"No such transformation: {name}")
 
@@ -85,19 +90,19 @@ class BaseModel(pl.LightningModule):
                 lr=self.hparams.learning_rate,  # type: ignore
                 weight_decay=self.hparams.optimizer_adamw_weight_decay,  # type: ignore
             )
-            log.info("Using FusedAdamW optimizer")
+            log.info("[optim] Using FusedAdamW optimizer")
         except ImportError:
             opt = torch.optim.AdamW(
                 self.parameters(),
                 lr=self.hparams.learning_rate,  # type: ignore
                 weight_decay=self.hparams.optimizer_adamw_weight_decay,  # type: ignore
             )
-            log.info("Using AdamW optimizer")
+            log.info("[optim] Using AdamW optimizer")
 
 
         warmup_epochs = self.hparams.lr_scheduler_linear_warmup_epochs
         if self.hparams.lr_scheduler_type == 'cosine':
-            log.info("Using LinearWarmupCosineAnnealingLR")
+            log.info("[sched] Using LinearWarmupCosineAnnealingLR")
             max_epochs = self.trainer.max_epochs
             if self.hparams.lr_scheduler_stepping == 'step': # iters probably given
                 steps_per_epoch = self.trainer.num_training_batches
@@ -114,11 +119,13 @@ class BaseModel(pl.LightningModule):
                     eta_min=self.hparams.lr_scheduler_cosine_eta_min,  # type: ignore
                 )
         elif self.hparams.lr_scheduler_type == 'linear':
-            log.info("Using LinearWarmupLR")
+            log.info("[sched] Using LinearWarmupLR")
             sched = LinearWarmupLR(
                 opt,
                 warmup_epochs=warmup_epochs,
                 warmup_start_lr=self.hparams.lr_scheduler_linear_warmup_start_lr,  # type: ignore
+                cooldown_end_lr=self.hparams.lr_scheduler_linear_warmup_start_lr,  # type: ignore
+                cooldown_epochs=warmup_epochs if self.hparams.start_lr_decay else -1,  # type: ignore
             )
         else:
             raise ValueError(f"Invalid scheduler type: {self.hparams.lr_scheduler_type}")
@@ -148,10 +155,10 @@ class BaseModel(pl.LightningModule):
                    ) -> None:
         for name in loss_dict.keys():
             l = loss_dict[name]
-            if hasattr(self.hparams, 'loss_weights'):
-                l *= self.hparams.loss_weights.get(name, 1.0)
             if l == 0:
                 continue
+            prefix = f'{prefix}' if prefix is not None else ""
+            postfix = f'{postfix}' if postfix is not None else ""
             full_name = f'{prefix}{name}{postfix}'
             self.log(full_name, l, sync_dist=True, on_step='train' in full_name, on_epoch=True, **kwargs)
 

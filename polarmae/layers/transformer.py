@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from polarmae.layers.attention import prepare_attn_mask
 from polarmae.layers.block import Block
-from polarmae.layers.masking import MaskedDropPath, MaskedLayerNorm
+from polarmae.layers.masking import MaskedDropPath, MaskedLayerNorm, MaskedRMSNorm
 from polarmae.utils.pylogger import RankedLogger
 
 log = RankedLogger(__name__, rank_zero_only=True)
@@ -62,6 +62,9 @@ class Transformer(nn.Module):
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
 
+        if isinstance(norm_layer, str):
+            norm_layer = globals()[norm_layer]
+
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -84,8 +87,9 @@ class Transformer(nn.Module):
         )
 
         # output norm
-        self.norm = MaskedLayerNorm(embed_dim) if postnorm else Identity()
-
+        self.norm = norm_layer(embed_dim) if postnorm else Identity()
+        log.info(f'postnorm: {postnorm}')
+        log.info(f'norm_layer: {norm_layer}')
         self.add_pos_at_every_layer = add_pos_at_every_layer
 
         # prefix-tuning

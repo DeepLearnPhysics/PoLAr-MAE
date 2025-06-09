@@ -3,7 +3,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
-from polarmae.layers.masking import MaskedBatchNorm1d
+from polarmae.layers.masking import MaskedBatchNorm1d, MaskedRMSNorm
 
 
 class MaskedMiniPointNet(nn.Module):
@@ -14,19 +14,22 @@ class MaskedMiniPointNet(nn.Module):
         hidden_dim1: int = 128,
         hidden_dim2: int = 256,
         equivariant: bool = False,
+        norm_layer: str = 'MaskedBatchNorm1d',
     ):
         super().__init__()
         self.feature_dim = feature_dim
+        if isinstance(norm_layer, str):
+            norm_layer = globals()[norm_layer]
         self.first_conv = nn.Sequential(
             nn.Conv1d(channels, hidden_dim1, 1, bias=False),
-            MaskedBatchNorm1d(hidden_dim1),
+            MaskedRMSNorm(hidden_dim1),
             nn.ReLU(inplace=True),
             nn.Conv1d(hidden_dim1, hidden_dim2, 1),
         )
 
         self.second_conv = nn.Sequential(
             nn.Conv1d(hidden_dim2 * 2, hidden_dim2 * 2, 1, bias=False),
-            MaskedBatchNorm1d(hidden_dim2 * 2),
+            MaskedRMSNorm(hidden_dim2 * 2),
             nn.ReLU(inplace=True),
             nn.Conv1d(hidden_dim2 * 2, feature_dim, 1),
         )
@@ -50,6 +53,8 @@ class MaskedMiniPointNet(nn.Module):
         for layer in self.first_conv:
             if isinstance(layer, MaskedBatchNorm1d):
                 feature = layer(feature, mask)
+            elif isinstance(layer, MaskedRMSNorm):
+                feature = layer(feature.transpose(1,2)).transpose(1,2)
             else:
                 feature = layer(feature)
 
@@ -66,6 +71,8 @@ class MaskedMiniPointNet(nn.Module):
         for layer in self.second_conv:
             if isinstance(layer, MaskedBatchNorm1d):
                 feature = layer(feature, mask)
+            elif isinstance(layer, MaskedRMSNorm):
+                feature = layer(feature.transpose(1,2)).transpose(1,2)
             else:
                 feature = layer(feature)
 
