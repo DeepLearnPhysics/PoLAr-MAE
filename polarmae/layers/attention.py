@@ -6,6 +6,10 @@ import torch.nn.functional as F
 
 __all__ = ["Attention", "prepare_attn_masks"]
 
+torch_version = torch.__version__
+torch_version = tuple(map(int, torch.__version__.split('.')[:2]))
+mask_dtype = torch.float32 if torch_version < (2, 5) else torch.bool
+
 class Attention(nn.Module):
     """Attention with optional cross-attention and support for cu_seqlens"""
     def __init__(
@@ -178,6 +182,9 @@ def _create_attn_mask(q_mask: torch.Tensor, kv_mask: torch.Tensor | None = None,
     attn_mask = (
         q_mask.unsqueeze(1).unsqueeze(3) & kv_mask.unsqueeze(1).unsqueeze(2)
     )
+
+    if mask_dtype != torch.bool:
+        attn_mask.masked_fill_(attn_mask.logical_not(), -float('inf'))
     return attn_mask
     
 
