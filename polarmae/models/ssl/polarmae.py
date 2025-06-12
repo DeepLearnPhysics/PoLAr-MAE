@@ -40,6 +40,7 @@ class PoLArMAE(SSLModel):
         svm_validation_max_tokens: int = 7500,
         fix_estimated_stepping_batches: Optional[int] = None,  # multi GPU bug fix
         loss_weights: Dict[str, float] = {'chamfer': 1.0, 'energy': 1.0},
+        watch_grad: bool = False,
         ):
 
         super().__init__()
@@ -75,21 +76,21 @@ class PoLArMAE(SSLModel):
         self.embed_dim = encoder.embed_dim
         self.equivariant_patch_encoder = MaskedMiniPointNet(
             channels=3,
-            feature_dim=64,
+            feature_dim=96,
             equivariant=True,
             hidden_dim1=64,
             hidden_dim2=64,
         )
 
         self.energy_decoder = nn.Conv1d(
-            self.embed_dim + 64, # 384 + 64
+            self.embed_dim + 96, # 384 + 96
             1 * encoder.tokenizer.grouping.group_max_points,
             1,
         )  # 2*embed_dim (1 embed_dim for encoded positions, 1 for regressed masked tokens)
 
         self.tokens_processed = 0
 
-    def compute_loss(self, points: torch.Tensor, lengths: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def compute_loss(self, points: torch.Tensor, lengths: torch.Tensor, return_embeddings: bool = False) -> Dict[str, torch.Tensor]:
         # encode toks
         out = self.encoder.prepare_tokens_with_masks(points, lengths)
 
@@ -148,7 +149,11 @@ class PoLArMAE(SSLModel):
         # get average number of points
         info_dict['mean_points'] = lengths.float().mean()
         info_dict['mean_groups'] = out['emb_mask'].sum(-1).float().mean()
-        return {'chamfer': chamfer_loss, 'energy': energy_loss}, info_dict
+        
+        if return_embeddings:
+            return {'chamfer': chamfer_loss, 'energy': energy_loss}, info_dict, tok_enc_um
+        else:
+            return {'chamfer': chamfer_loss, 'energy': energy_loss}, info_dict
     
     def training_step(self, batch, batch_idx: int) -> torch.Tensor:
         points = batch['points']
@@ -176,7 +181,63 @@ class PoLArMAE(SSLModel):
         points = batch['points']
         lengths = batch['lengths']
         points = self.val_transformations(points)
-        loss_dict, info_dict = self.compute_loss(points, lengths)
+        
+        # Monitor representation collapse on first batch
+        if batch_idx == 0:
+            loss_dict, info_dict = self.compute_loss(points, lengths)
+            
+            # Get embeddings with and without final layer norm
+            out = self.encoder.prepare_tokens_with_masks(points, lengths)
+            
+            with torch.no_grad():
+                # Get embeddings without final layer norm
+                tok_enc_raw = self.encoder(out['unmasked_tokens'], out['unmasked_pos_embed'], out['unmasked_mask'], final_norm=False).last_hidden_state[out['unmasked_mask']]
+                
+                # Get embeddings with final layer norm
+                tok_enc_norm = self.encoder(out['unmasked_tokens'], out['unmasked_pos_embed'], out['unmasked_mask'], final_norm=True).last_hidden_state[out['unmasked_mask']]
+                
+                # Function to compute representation metrics
+                def compute_representation_metrics(embeddings, suffix=""):
+                    metrics = {}
+                    
+                    if embeddings.numel() > 0:
+                        feature_std = torch.std(embeddings, dim=0, unbiased=False).mean()
+                        metrics[f'feature_std{suffix}'] = feature_std
+                        
+                        l2_norm = torch.norm(embeddings, p=2, dim=-1).mean()
+                        metrics[f'l2_norm{suffix}'] = l2_norm
+                        
+                        flattened_tokens = embeddings.view(-1, embeddings.shape[-1])  # (B*N, D)
+                        if flattened_tokens.shape[0] > flattened_tokens.shape[1]:  # More samples than features
+                            try:
+                                singular_values = torch.linalg.svdvals(flattened_tokens.float())
+                                svd_max = singular_values[0]  # Largest singular value
+                                svd_min = singular_values[-1]  # Smallest singular value
+                                svd_ratio = svd_max / (svd_min + 1e-8)  # Condition number
+                                svd_entropy = -torch.sum(singular_values / singular_values.sum() * 
+                                                       torch.log(singular_values / singular_values.sum() + 1e-8))  # Spectral entropy
+                                svd_top10_ratio = singular_values[:10].sum() / singular_values.sum()  # Top 10 eigenvalues ratio
+                                
+                                metrics.update({
+                                    f'svd_max{suffix}': svd_max,
+                                    f'svd_min{suffix}': svd_min,
+                                    f'svd_ratio{suffix}': svd_ratio,
+                                    f'svd_entropy{suffix}': svd_entropy,
+                                    f'svd_top10_ratio{suffix}': svd_top10_ratio,
+                                })
+                            except Exception as e:
+                                log.warning(f"SVD computation failed for {suffix}: {e}")
+                    
+                    return metrics
+                
+                raw_metrics = compute_representation_metrics(tok_enc_raw, "_no_postnorm")
+                norm_metrics = compute_representation_metrics(tok_enc_norm, "_postnorm")
+                
+                info_dict.update(raw_metrics)
+                info_dict.update(norm_metrics)
+        else:
+            loss_dict, info_dict = self.compute_loss(points, lengths)
+        
         self.log_losses(loss_dict, prefix='loss/val_', batch_size=points.shape[0])
         loss = sum(loss_dict[k] * self.hparams.loss_weights.get(k, 1.0) for k in loss_dict.keys())
         batch_size = points.shape[0]

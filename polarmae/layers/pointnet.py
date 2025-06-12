@@ -22,14 +22,14 @@ class MaskedMiniPointNet(nn.Module):
             norm_layer = globals()[norm_layer]
         self.first_conv = nn.Sequential(
             nn.Conv1d(channels, hidden_dim1, 1, bias=False),
-            MaskedRMSNorm(hidden_dim1),
+            norm_layer(hidden_dim1),
             nn.ReLU(inplace=True),
             nn.Conv1d(hidden_dim1, hidden_dim2, 1),
         )
 
         self.second_conv = nn.Sequential(
             nn.Conv1d(hidden_dim2 * 2, hidden_dim2 * 2, 1, bias=False),
-            MaskedRMSNorm(hidden_dim2 * 2),
+            norm_layer(hidden_dim2 * 2),
             nn.ReLU(inplace=True),
             nn.Conv1d(hidden_dim2 * 2, feature_dim, 1),
         )
