@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import List, Literal, Optional, Tuple, Union
 
 import torch
@@ -66,11 +67,9 @@ def masked_gather(points: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         K = idx.shape[2]
 
         if points.ndim == 3:
-            # Match dimensions for points and indices
             idx_expanded = idx[..., None].expand(-1, -1, -1, D)
             points = points[:, :, None, :].expand(-1, -1, K, -1)
         elif points.ndim == 4:
-            # Match dimensions for points and indices
             idx_expanded = idx[:, :, :, None, None].expand(-1, -1, -1, P, D)
             points = points[:, :, None, :, :].expand(-1, -1, K, -1, -1)
     elif idx.ndim == 2:
@@ -146,7 +145,9 @@ def sample_farthest_points(
             raise ValueError("A value in lengths was too large.")
 
     # TODO: support providing K as a ratio of the total number of points instead of as an int
+    max_K = -1
     if isinstance(K, int):
+        max_K = K
         K = torch.full((N,), K, dtype=torch.int64, device=device)
     elif isinstance(K, list):
         K = torch.tensor(K, dtype=torch.int64, device=device)
@@ -174,7 +175,7 @@ def sample_farthest_points(
 
     with torch.no_grad():
         # pyre-fixme[16]: `pytorch3d_._C` has no attribute `sample_farthest_points`.
-        idx = _C.sample_farthest_points(points[:, :, :3], lengths, K, start_idxs)
+        idx = _C.sample_farthest_points(points[:, :, :3], lengths, K, start_idxs, max_K)
     sampled_points = masked_gather(points, idx)
     return sampled_points, idx
 
@@ -296,6 +297,7 @@ class PointcloudGrouping(nn.Module):
                                        instead of just one of the points.
         rescale_by_group_radius (bool): Flag to determine if groups should be rescaled by the group_radius, as in PointNeXT.
     """
+    _HAS_WARNED_OOM = False
     def __init__(
         self,
         num_groups: int | float,
@@ -322,7 +324,7 @@ class PointcloudGrouping(nn.Module):
         self.use_relative_features = use_relative_features
         self.normalize_group_centers = normalize_group_centers
         self.rescale_by_group_radius = rescale_by_group_radius
-        self.use_fps_seed = self.overlap_factor is None
+        self.use_fps_seed = self.overlap_factor is None or use_fps_seed
         if not self.use_fps_seed:
             log.info(f"Using CNMS for grouping. Using `num_groups` as the K in the ball query ({self.num_groups})! Make sure it's not too large!")
 
@@ -361,11 +363,14 @@ class PointcloudGrouping(nn.Module):
                 K=self.num_groups,          # 64 or 128 is good! don't let it be too large.
                 lengths=possible_lengths,
             )  # (B, G, 3), (B,)
-            group_centers = group_centers[:,:self.context_length]
-            if (lengths1 > self.context_length).any():
+            if (lengths1 > self.context_length).any() and not self._HAS_WARNED_OOM:
+                self._HAS_WARNED_OOM = True
                 log.warning(
-                    f"Some events had more groups than the context length allows ({lengths1} > {self.context_length})! This should not happen!"
+                    f"Some events had more groups than the context length allows ({lengths1} > {self.context_length})! "
+                    "This is usually due to incorrect scaling/centering of the pointcloud. You may get OOM."
                 )
+                self.context_length = lengths1.max()
+            group_centers = group_centers[:,:self.context_length]
             lengths1 = lengths1.clamp_max(self.context_length)
         else:
             # if no overlap factor, just use the seed points as the group centers

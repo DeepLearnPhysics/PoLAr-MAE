@@ -7,14 +7,14 @@ channels:
   - conda-forge
   - iopath
 dependencies:
-  - python=3.9
+  - python=3.10
   - cuda
   - cudnn
   - gcc=12
   - gxx
   - pytorch=2.5.1
-  - torchvision
   - pytorch-cuda=12.4
+  - torchvision
   - iopath
   - h5py
   - numpy
@@ -23,5 +23,13 @@ dependencies:
   - scikit-learn
   - omegaconf
   - pip
+  - torchmetrics
+  - pybind11
+  - mkl=2022.1.0 # https://github.com/pytorch/pytorch/issues/123097
+  # optional
+  - ipykernel
+  - matplotlib
+  - plotly
+  - tqdm
   - pip:
       - "jsonargparse[signatures]>=4.27.7"

@@ -42,7 +42,7 @@ def cnms(centroids, radius, overlap_factor, K=None, lengths=None):
         # create a dummy lengths tensor with shape (N,) and
         # all entries = P
         lengths = torch.full(
-            (N,), fill_value=P, dtype=torch.int32, device=centroids.device
+            (N,), fill_value=P, dtype=torch.int64, device=centroids.device
         )
 
     query_radius = 2 * radius * overlap_factor

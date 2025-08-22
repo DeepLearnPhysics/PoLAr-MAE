@@ -4,7 +4,12 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_lightning.loggers import WandbLogger
+
+try:
+    from pytorch_lightning.loggers import WandbLogger
+except ImportError:
+    WandbLogger = None
+
 from torchmetrics import Accuracy, Precision, F1Score
 
 from polarmae.eval.segmentation import compute_shape_ious
@@ -130,7 +135,7 @@ class SemanticSegmentation(FinetuneModel):
         self.val_f1_score_m = F1Score("multiclass", **metric_kwargs, average="macro")
 
         for logger in self.loggers:
-            if isinstance(logger, WandbLogger):
+            if WandbLogger is not None and isinstance(logger, WandbLogger):
                 self.wandb_logger = logger
                 logger.watch(self)
                 logger.experiment.define_metric("val_acc", summary="last,max")

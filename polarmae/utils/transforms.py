@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Callable, Optional, Sequence, Tuple, List
 
 import torch
