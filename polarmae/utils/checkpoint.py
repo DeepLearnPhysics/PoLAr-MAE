@@ -96,22 +96,21 @@ def _recursive_resolve(cfg):
     Recursively traverse cfg and instantiate any dictionary that
     contains a "class_path" key.
     """
-    # If it's a DictConfig or a plain dict, process its items.
+    # if it's a DictConfig or a plain dict, process its items.
     if isinstance(cfg, (dict, DictConfig)):
-        # First, recursively process children.
+        # first, recursively process children.
         instantiated = {}
         for key, value in cfg.items():
             instantiated[key] = _recursive_resolve(value)
 
-        # If this dictionary is meant to be instantiated, do so.
+        # if this dictionary is meant to be instantiated, do so.
         if "class_path" in instantiated:
-            # Optionally, you can merge extra keys outside of "init_args" here if needed.
+            # get args and resolve them
             init_args = instantiated.get("init_args", {})
-            # Make sure the init_args themselves have been recursively instantiated.
             if isinstance(init_args, (dict, DictConfig)):
                 init_args = _recursive_resolve(init_args)
 
-            # Dynamically import and instantiate.
+            # dynamically import and instantiate.
             class_path = instantiated["class_path"]
             module_name, class_name = class_path.rsplit(".", 1)
             module = importlib.import_module(module_name)
@@ -120,69 +119,33 @@ def _recursive_resolve(cfg):
         else:
             return instantiated
 
-    # If it's a list, apply the function to each element.
+    # if it's a list, apply the function to each element.
     elif isinstance(cfg, list):
         return [_recursive_resolve(item) for item in cfg]
 
     elif isinstance(cfg, ListConfig):
         return list(cfg)
 
-    # Otherwise, return the value as is.
+    # otherwise, return the value as is.
     else:
         return cfg
 
 def parse_config(config_path: str):
-    cfg = OmegaConf.load(config_path)
     if not OmegaConf.has_resolver('eval'):
         OmegaConf.register_new_resolver("eval", lambda expr: eval(expr))  # Use with caution!
+    cfg = OmegaConf.load(config_path)
     return _recursive_resolve(cfg)
 
-def load_finetune_checkpoint(
-    cls,
-    checkpoint_path: str,
-    data_path: str = None,
-    pretrained_ckpt_path: str = None,
-):
+def load_finetune_checkpoint(checkpoint_path: str):
+    from polarmae.models.finetune.semantic_segmentation import SemanticSegmentation
     ckpt = torch.load(checkpoint_path, weights_only=False)
     hparams = ckpt["hyper_parameters"]
     hparams = _recursive_resolve(hparams)
     hparams.pop("_instantiator")
-
-    datamodule_hparams = ckpt["datamodule_hyper_parameters"]
-    datamodule_cls_path = datamodule_hparams["_class_path"]
-    datamodule_name, class_name = datamodule_cls_path.rsplit(".", 1)
-    
-    # fix for old checkpoints
-    if datamodule_name == 'larnet.datasets':
-        datamodule_name = 'polarmae.datasets'
-    if class_name == 'LArNetDataModule':
-        class_name = 'PILArNetDataModule'
-
-    datamodule = importlib.import_module(datamodule_name)
-    datamodule_cls = getattr(datamodule, class_name)
-
-    datamodule_hparams.pop("_class_path")
-    datamodule_hparams.pop("_instantiator")
-
-    if data_path is not None:
-        datamodule_hparams["data_path"] = data_path
-    else:
-        log.warning(
-            f"No data path provided, using data path {datamodule_hparams['data_path']}"
-        )
-
-    datamodule = datamodule_cls(**datamodule_hparams)
-    datamodule.setup()
-    model = cls(**hparams)
-    trainer = pl.Trainer()
-    model.trainer = trainer
-    trainer.datamodule = datamodule
-
-    model.setup()
-    log.info(
-        "Loading state dict. There should be no missing or unexpected keys below here."
-    )
+    model = SemanticSegmentation(**hparams)
     missed, unexpected = model.load_state_dict(ckpt["state_dict"])
-    log.info(f"Missed: {missed}")
-    log.info(f"Unexpected: {unexpected}")
+    if len(missed) > 0:
+        raise RuntimeError("Missed keys in checkpoint: " + ", ".join(missed))
+    if len(unexpected) > 0:
+        log.warning("Unexpected keys in checkpoint:" + ", ".join(unexpected))
     return model

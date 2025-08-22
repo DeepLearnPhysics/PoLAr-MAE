@@ -1,3 +1,4 @@
+from __future__ import annotations
 from math import sqrt
 from typing import Literal, Tuple
 
@@ -135,14 +136,14 @@ def _2p5voxel_tokenizer(num_channels=4, embed_dim=384, **kwargs) -> PointcloudTo
     LArNET ViT-S/2.5 voxel tokenizer
     """
     config = dict(
-        num_init_groups=2048,
+        num_init_groups=256,
         context_length=1024,
         group_max_points=16,
         group_radius=2.5 / (768 * sqrt(3) / 2), # voxel_radius * scaling_constant
         group_upscale_points=64,
         overlap_factor=0.73,
         reduction_method='fps',
-        use_fps_seed=True,
+        use_fps_seed=False,
     )
     config.update(kwargs)
     return PointcloudTokenizer(
@@ -156,14 +157,14 @@ def _5voxel_tokenizer(num_channels=4,embed_dim=384,**kwargs) -> PointcloudTokeni
     LArNET ViT-S/5 voxel tokenizer
     """
     config = dict(
-        num_init_groups=2048,
+        num_init_groups=256,
         context_length=512,
         group_max_points=32,
         group_radius=5 / (768 * sqrt(3) / 2), # voxel_radius * scaling_constant
         group_upscale_points=256,
         overlap_factor=0.72,
         reduction_method='fps',
-        use_fps_seed=True,
+        use_fps_seed=False,
     )
     config.update(kwargs)
     return PointcloudTokenizer(

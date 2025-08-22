@@ -19,35 +19,22 @@
 This codebase relies on a number of dependencies, some of which are difficult to get running. If you're using conda on Linux, use the following to create an environment and install the dependencies:
 
 ```bash
-conda env create -f environment.yml
-conda activate polarmae
-
-# Install pytorch3d
-cd extensions
-git clone https://github.com/facebookresearch/pytorch3d.git
-cd pytorch3d
-MAX_JOBS=N pip install -e .
-
-# Install C-NMS
-cd ../cnms
-MAX_JOBS=N pip install -e .
-
-# Install polarmae
-cd ../.. # should be in the root directory of the repository now
-pip install -e .
+git clone https://github.com/DeepLearnPhysics/PoLAr-MAE.git
+cd PoLAr-MAE
+bash ./install.sh
 ```
 
 > [!NOTE]
->environment.yml is a full environment specification, which includes an install of cuda 12.4, pytorch 2.1.5, and python 3.9.
+>This script will create a conda environment using `environment.yml` before installing `pytorch3d`, `cnms`, and `polarmae`. environment.yml is a full environment specification, which includes an install of cuda 12.4, pytorch 2.5.1, python 3.10.
 > 
 > `pytorch3d` and `cnms` are compiled from source, and will only be compiled for the CUDA device architecture of the visible GPU(s) available on the system.
 
-Change `N` in `MAX_JOBS=N` to the number of cores you want to use for installing `pytorch3d` and `cnms`. At least 4 cores is recommended to compile `pytorch3d` in a reasonable amount of time. 
+Set the number of cores to use via `N_JOBS=# bash ./install.sh`. At least 4 cores is recommended to compile `pytorch3d` in a reasonable amount of time. 
 
 If you'd like to do the installation on your own, you will need the following dependencies:
 
 - [CUDA](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#)
-- PyTorch 2.1.0, 2.1.1, 2.1.2, 2.2.0, 2.2.1, 2.2.2, 2.3.0, 2.3.1, 2.4.0 or 2.4.1.
+- PyTorch
 - gcc & g++ >= 4.9 and < 13
 - [pytorch3d](https://github.com/facebookresearch/pytorch3d)
 - [PyTorch Lightning](https://github.com/Lightning-AI/pytorch-lightning)
@@ -72,7 +59,7 @@ Tutorial notebooks for understanding the dataset, model architecture, pretrainin
 
 ## PILArNet-M Dataset
 
-We use and provide the 156 GB **PILArNet-M** dataset of >1M [LArTPC](https://www.symmetrymagazine.org/article/october-2012/time-projection-chambers-a-milestone-in-particle-detector-technology?language_content_entity=und) events. See [DATASET.md](DATASET.md) for more details, but the dataset is available at this [link](https://drive.google.com/drive/folders/1nec9WYPRqMn-_3m6TdM12TmpoInHDosb?usp=drive_link), or can be downloaded with the following command:
+We use and provide the 156 GB **PILArNet-M** dataset of ~1.2M [LArTPC](https://www.symmetrymagazine.org/article/october-2012/time-projection-chambers-a-milestone-in-particle-detector-technology?language_content_entity=und) events. See [DATASET.md](DATASET.md) for more details, but the dataset is available at this [link](https://drive.google.com/drive/folders/1nec9WYPRqMn-_3m6TdM12TmpoInHDosb?usp=drive_link), or can be downloaded with the following command:
 
 ```bash
 gdown --folder 1nec9WYPRqMn-_3m6TdM12TmpoInHDosb -O /path/to/save/dataset
@@ -120,13 +107,10 @@ After installing the dependencies, you can run the following commands in an inte
 >>> from polarmae.models.finetune import SemanticSegmentation
 >>> from polarmae.utils.checkpoint import load_finetune_checkpoint
 >>> !wget https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/download/weights/{mae,polarmae}_{fft,peft}_segsem.ckpt
->>> model = load_finetune_checkpoint(SemanticSegmentation, 
-                                    "{mae,polarmae}_{fft,peft}_segsem.ckpt",
-                                    data_path="/path/to/pilarnet-m/dataset",
-                                    pretrained_ckpt_path="{mae,polarmae}_pretrain.ckpt")
+>>> model = load_finetune_checkpoint("{mae,polarmae}_{fft,peft}_segsem.ckpt")
 ```
 
-Here, the brackets {} denote the model and the training method -- choose one from `{mae,polarmae}` and `{fft,peft}`. Note that you must use the `load_finetune_checkpoint` function to load the model, as it has to do some extra setup not required for the pretraining phase. Knowing the `data_path` is necessary as the number of segmentation classes is determined by the dataset.
+Here, the brackets {} denote the model and the training method -- choose one from `{mae,polarmae}` and `{fft,peft}`. Note that you must use the `load_finetune_checkpoint` function to load the model, not `SemanticSegmentation.load_from_checkpoint()`.
 
 ## Training
 
@@ -174,7 +158,6 @@ where `{mae,polarmae}` is either `mae` or `polarmae`, and `{peft,fft}` is either
 
   <img src="images/ft_segsem_loss.png" alt="training plots" width="300">
   <img src="images/ft_segsem_accprec.png" alt="svm plots" width="300">
-  <img src="images/ft_segsem_mious.png" alt="svm plots" width="300">
 </details>
 
 
