@@ -19,7 +19,7 @@
 This codebase relies on a number of dependencies, some of which are difficult to get running. If you're using conda on Linux, use the following to create an environment and install the dependencies:
 
 ```bash
-git clone https://github.com/DeepLearnPhysics/PoLAr-MAE.git
+git clone --recurse-submodules https://github.com/DeepLearnPhysics/PoLAr-MAE.git
 cd PoLAr-MAE
 bash ./install.sh
 ```
