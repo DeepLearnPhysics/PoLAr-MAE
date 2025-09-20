@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-# @Author: Sam Young
-# @Date:   2024-12-31 10:34:00
-# @Email: youngsam@stanford.edu
-
 from pytorch3d.ops import ball_query
 from . import _ext
 import torch
