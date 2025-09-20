@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-# @Author: Sam Young
-# @Date:   2024-12-31 10:34:00
-# @Email: youngsam@stanford.edu
-
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 from setuptools import find_packages
