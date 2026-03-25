@@ -12,6 +12,9 @@
 </div>
 
 \
+Dec 2025 🐼: See our recent follow up work, [Panda](https://github.com/DeepLearnPhysics/Panda), which greatly improves upon PoLAr-MAE.
+
+\
 ![arch](images/arch.png)
 
 ## Installation
